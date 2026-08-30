@@ -1,4 +1,4 @@
-// Package tuitemplate exists for one reason: to embed the repository's
+// Package tuinetwork exists for one reason: to embed the repository's
 // tool.json into the binary.
 //
 // The manifest is the family's single source of truth about a tool. Since it
@@ -10,7 +10,7 @@
 //
 // Keep this file when you start a tool from the template: rename the package
 // after your tool and leave everything else as it is.
-package tuitemplate
+package tuinetwork
 
 import _ "embed"
 

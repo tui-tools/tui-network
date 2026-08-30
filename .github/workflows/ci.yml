@@ -1,7 +1,7 @@
 # CI template for a tui-tools tool.
 #
 # Copy to .github/workflows/ci.yml in the tool's repository and replace every
-# tui-template with the tool name. It runs the same checks `make check` runs
+# tui-network with the tool name. It runs the same checks `make check` runs
 # locally, cross-compiles for both release targets, and on a `v*` tag lets
 # GoReleaser publish the binaries.
 name: CI
@@ -25,7 +25,9 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          # go.mod is the single place the family's Go version lives, so a
+          # bump there moves CI with it.
+          go-version-file: go.mod
           check-latest: true
 
       - name: gofmt
@@ -39,6 +41,19 @@ jobs:
 
       - name: go vet
         run: go vet ./...
+
+      # The family's lint bar, shared as .golangci.yml. Nothing is excluded
+      # wholesale: a deliberate finding carries a //nolint saying why.
+      #
+      # Built from source rather than downloaded: golangci-lint refuses a
+      # module whose language version is newer than the Go it was built with,
+      # and no released binary is built with 1.27 yet. goinstall compiles it
+      # with the Go set up above, so the lint tracks the toolchain.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.13.2
+          install-mode: goinstall
 
       # The family's central promise — the command line you were shown is the
       # one that ran — only holds while a single package can start a process.
@@ -64,7 +79,7 @@ jobs:
         run: go test -race ./...
 
       - name: build
-        run: CGO_ENABLED=0 go build -trimpath -o /tmp/tui-template ./cmd/tui-template
+        run: CGO_ENABLED=0 go build -trimpath -o /tmp/tui-network ./cmd/tui-network
 
       - name: verify go.mod is tidy
         run: |
@@ -82,7 +97,9 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          # go.mod is the single place the family's Go version lives, so a
+          # bump there moves CI with it.
+          go-version-file: go.mod
           check-latest: true
 
       - name: build static linux/${{ matrix.goarch }}
@@ -90,7 +107,7 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
-        run: go build -trimpath -o "/tmp/tui-template_${GOARCH}" ./cmd/tui-template
+        run: go build -trimpath -o "/tmp/tui-network_${GOARCH}" ./cmd/tui-network
 
   manifest:
     name: validate tool.json
@@ -131,7 +148,9 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          # go.mod is the single place the family's Go version lives, so a
+          # bump there moves CI with it.
+          go-version-file: go.mod
           check-latest: true
 
       - uses: goreleaser/goreleaser-action@v6
@@ -152,4 +171,4 @@ jobs:
         run: |
           gh api repos/tui-tools/tui-tools.github.io/dispatches \
             -f event_type=tool-released \
-            -f 'client_payload[tool]=tui-template'
+            -f 'client_payload[tool]=tui-network'
