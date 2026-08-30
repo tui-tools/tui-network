@@ -1,0 +1,30 @@
+Global
+         Protocols: LLMNR=resolve -mDNS -DNSOverTLS DNSSEC=no/unsupported
+  resolv.conf mode: uplink
+
+Link 2 (enp44s0)
+    Current Scopes: DNS LLMNR/IPv4 LLMNR/IPv6
+         Protocols: +DefaultRoute LLMNR=resolve -mDNS -DNSOverTLS
+                    DNSSEC=no/unsupported
+Current DNS Server: 192.0.2.53
+       DNS Servers: 192.0.2.53 192.0.2.53 2001:db8::53 2001:db8::53
+     Default Route: yes
+
+Link 3 (wlo1)
+    Current Scopes: DNS LLMNR/IPv4 LLMNR/IPv6
+         Protocols: +DefaultRoute LLMNR=resolve -mDNS -DNSOverTLS
+                    DNSSEC=no/unsupported
+Current DNS Server: 192.0.2.53
+       DNS Servers: 192.0.2.53 192.0.2.53 2001:db8::53
+                    2001:db8::53
+     Default Route: yes
+
+Link 4 (vpn00884c7f9d)
+    Current Scopes: none
+         Protocols: -DefaultRoute LLMNR=resolve -mDNS -DNSOverTLS
+                    DNSSEC=no/unsupported
+     Default Route: no
+
+Link 5 (vpn0058350b88)
+    Current Scopes: none
+         Protocols: -DefaultRoute LLMNR=resolve -mDNS -DNSOverTLS

@@ -1,0 +1,12 @@
+Global:
+Link 2 (enp44s0): 192.0.2.53 192.0.2.53 2001:db8::53 2001:db8::53
+Link 3 (wlo1): 192.0.2.53 192.0.2.53 2001:db8::53
+        2001:db8::53
+Link 4 (vpn00884c7f9d):
+Link 5 (vpn0058350b88):
+Link 6 (vpn00d544cd56):
+Link 7 (vpn00bfeb8dc7):
+Link 8 (vpn007bff04e6):
+Link 9 (tailscale0):
+Link 10 (br-bf0ce4d895ef):
+Link 11 (br-c97e0806f31c):

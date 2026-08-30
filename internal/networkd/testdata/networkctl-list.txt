@@ -1,0 +1,7 @@
+IDX LINK  TYPE     OPERATIONAL SETUP
+  1 lo    loopback carrier     unmanaged
+  2 eth0  ether    routable    unmanaged
+  3 veth1 ether    routable    unmanaged
+  4 veth0 ether    routable    configured
+
+4 links listed.

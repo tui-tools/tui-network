@@ -1,0 +1,23 @@
+● 4: veth0
+                   Link File: n/a
+                Network File: /etc/systemd/network/10-wired.network
+                       State: routable (configured)
+                Online state: online
+                        Type: ether
+                        Kind: veth
+            Hardware Address: 02:00:00:00:00:04
+                         MTU: 1500 (min: 68, max: 65535)
+                       QDisc: noqueue
+IPv6 Address Generation Mode: eui64
+    Number of Queues (Tx/Rx): 28/28
+            Auto negotiation: no
+                       Speed: 10Gbps
+                      Duplex: full
+                        Port: tp
+                     Address: 192.0.2.98 (DHCP4 via 192.0.2.1)
+                              fe80::ff:fe00:4
+                     Gateway: 192.0.2.1
+                         DNS: 192.0.2.53
+           Activation Policy: up
+         Required For Online: yes
+             DHCP4 Client ID: IAID:0x945c2505/DUID
