@@ -297,3 +297,114 @@ func TestParseNetworkFileIgnoresComments(t *testing.T) {
 		t.Errorf("settings = %+v", file.Settings)
 	}
 }
+
+// TestParseListJSONRealGuests pins the two shapes `networkctl --json=short
+// list` really has on the machines tui-lab boots.
+//
+// They are not the same shape. systemd 261 adds a top-level "Routes" array,
+// the *String rendering of every address ("AddressString",
+// "DestinationString"), and a whole decoded DHCP "Message" inside the lease;
+// systemd 255 has none of those and spells one field both
+// "PreferredLifetimeUSec" and "PreferredLifetimeUsec". The parser reads only
+// the fields it names, which is what makes both work — this test is what keeps
+// that true, because a fixture reconstructed by hand would have neither shape.
+//
+// Captured from the lab guests and rewritten into the documentation ranges:
+// QEMU's 10.0.2.0/24, fec0::/64 and 52:54:00 MAC never reach the repository.
+func TestParseListJSONRealGuests(t *testing.T) {
+	tests := []struct {
+		name        string
+		fixture     string
+		link        string
+		networkFile string
+		gateway     string
+	}{
+		{"systemd 255, Ubuntu 24.04 with netplan",
+			"networkctl-list-systemd255.json", "enp0s4",
+			"/run/systemd/network/10-netplan-enp0s4.network", "192.0.2.1"},
+		{"systemd 261, Omarchy Server 4.0.1",
+			"networkctl-list-systemd261.json", "enp0s4",
+			"/etc/systemd/network/20-wired.network", "192.0.2.1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			links, err := ParseListJSON(read(t, tt.fixture))
+			if err != nil {
+				t.Fatalf("ParseListJSON: %v", err)
+			}
+			if len(links) != 2 {
+				t.Fatalf("got %d links, want lo and %s", len(links), tt.link)
+			}
+			if links[0].Name != "lo" || links[0].Managed {
+				t.Errorf("link 0 = %+v, want an unmanaged lo", links[0])
+			}
+
+			link := links[1]
+			if link.Name != tt.link {
+				t.Fatalf("link 1 = %q, want %q", link.Name, tt.link)
+			}
+			if !link.Managed || link.Setup != network.SetupConfigured {
+				t.Errorf("%s setup = %q, managed = %v; want configured and managed",
+					link.Name, link.Setup, link.Managed)
+			}
+			if link.NetworkFile != tt.networkFile {
+				t.Errorf("network file = %q, want %q",
+					link.NetworkFile, tt.networkFile)
+			}
+			// The MAC and the addresses come back as bytes, so a parser that
+			// dropped the rebuild would leave these empty.
+			if link.MAC != "02:00:00:00:00:02" {
+				t.Errorf("MAC = %q, want the scrubbed 02:00:00:00:00:02", link.MAC)
+			}
+			if !hasAddress(link, "192.0.2.15") {
+				t.Errorf("addresses = %+v, want the DHCP lease 192.0.2.15",
+					link.Addresses)
+			}
+			if len(link.Gateways) == 0 || link.Gateways[0] != tt.gateway {
+				t.Errorf("gateways = %v, want %s first", link.Gateways, tt.gateway)
+			}
+			// Both guests lease their address, and the lease clock is the one
+			// field that only exists on the JSON path.
+			if !link.DHCP.Enabled || link.DHCP.LeaseTimestamp == "" {
+				t.Errorf("DHCP = %+v, want an enabled client with a lease",
+					link.DHCP)
+			}
+		})
+	}
+}
+
+// TestParseStatusJSONRealGuests reads the same two guests through
+// `networkctl status --json=short`, which is the detail view's own path and a
+// different envelope: one interface object rather than a list.
+func TestParseStatusJSONRealGuests(t *testing.T) {
+	for _, fixture := range []string{
+		"networkctl-status-systemd255.json",
+		"networkctl-status-systemd261.json",
+	} {
+		t.Run(fixture, func(t *testing.T) {
+			link, err := ParseStatusJSON(read(t, fixture))
+			if err != nil {
+				t.Fatalf("ParseStatusJSON: %v", err)
+			}
+			if link.Name != "enp0s4" || !link.Managed {
+				t.Fatalf("link = %+v, want a managed enp0s4", link)
+			}
+			if link.MTU != 1500 || link.Type != "ether" {
+				t.Errorf("type/MTU = %q/%d, want ether/1500", link.Type, link.MTU)
+			}
+			if !hasAddress(link, "192.0.2.15") {
+				t.Errorf("addresses = %+v, want 192.0.2.15", link.Addresses)
+			}
+		})
+	}
+}
+
+// hasAddress reports whether a link carries an address, by its text form.
+func hasAddress(link network.Link, address string) bool {
+	for _, a := range link.Addresses {
+		if a.Address == address {
+			return true
+		}
+	}
+	return false
+}

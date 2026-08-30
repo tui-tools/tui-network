@@ -1,1 +1,4 @@
 {"backend":"systemd-networkd","date":"2026-08-30","distro":"fedora-42","result":"pass","suite":"smoke","tool":"tui-network","version":"257"}
+{"backend": "systemd-networkd", "date": "2026-08-30", "distro": "ubuntu-24.04", "result": "pass", "suite": "smoke", "tool": "tui-network", "version": "255"}
+{"backend": "systemd-networkd", "date": "2026-08-30", "distro": "omarchy-server-4.0.1", "result": "pass", "suite": "smoke", "tool": "tui-network", "version": "261"}
+{"backend": "systemd-networkd", "date": "2026-08-30", "distro": "fedora-44", "result": "pass", "suite": "smoke", "tool": "tui-network", "version": "259"}

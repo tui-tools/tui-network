@@ -303,7 +303,7 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | Binary | `networkctl` |
 | Version read with | `networkctl --version` |
 | Minimum | 245 |
-| Tested | `257` |
+| Tested | `255`, `257`, `259`, `261` |
 | Version-gated features | `json-status` (since 249), `link-up-down` (since 249) |
 
 | Versions | What changes |
@@ -389,7 +389,13 @@ widgets, the config loader and the command runner shared by the whole family.
 - `tui-network` re-reads the network after every change, so what you see is what
   the system reports, not what the tool assumed.
 - The `.network` file is staged in a private temporary directory first, and the
-  only privileged step is the `install` you approved.
+  only privileged step that *changes* anything is the `install` you approved.
+- One read escalates, unprompted: a `.network` file the plain read cannot open
+  is re-read with `sudo -n cat`. netplan renders its files into
+  `/run/systemd/network` as mode 0640 `root:systemd-network`, so on a stock
+  Ubuntu cloud image that is the only file configuring the machine's only
+  managed link. Without it the screen showed seven `/usr/lib` templates and not
+  the one file the editor exists to edit — found in `tui-lab` on Ubuntu 24.04.4.
 
 ## License
 

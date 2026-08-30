@@ -43,6 +43,7 @@ var searchPaths = map[string][]string{
 	"ip":         {"/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip"},
 	"journalctl": {"/usr/bin/journalctl", "/bin/journalctl"},
 	"install":    {"/usr/bin/install", "/bin/install"},
+	"cat":        {"/usr/bin/cat", "/bin/cat"},
 }
 
 // installHint is appended to the "not found" error.
@@ -64,6 +65,9 @@ type Real struct {
 	ip         *runner.Runner
 	journalctl *runner.Runner
 	install    *runner.Runner
+	// cat is the escalated fallback for reading a .network file an
+	// unprivileged process cannot open. See readConfigFile.
+	cat *runner.Runner
 
 	// caps gates the reads that only exist on a new enough systemd. It comes
 	// from the manifest, so no version number is written into this file.
@@ -114,6 +118,15 @@ func NewReal(sudoPrefix []string, caps compat.Caps) (*Real, error) {
 		}
 		*spec.target = r
 	}
+
+	// The escalated fallback for a .network file the plain read cannot open.
+	// It is not part of the loop above because a machine without `cat` simply
+	// has no fallback, which is not worth failing New over.
+	real.cat, _ = runner.New(runner.Options{
+		Bin:         "cat",
+		SearchPaths: searchPaths["cat"],
+		SudoPrefix:  sudoPrefix,
+	})
 	return real, nil
 }
 
@@ -199,7 +212,7 @@ func (r *Real) Load(ctx context.Context) (network.Model, error) {
 		model.Routes = routes
 	}
 	r.loadDNS(ctx, &model)
-	model.ConfigFiles = LoadConfigFiles(model.Links)
+	model.ConfigFiles = r.loadConfigFiles(ctx, model.Links)
 	r.markUnmanaged(&model)
 	return model, nil
 }
@@ -420,13 +433,48 @@ func stageFile(destination, content string) (string, error) {
 	return path, nil
 }
 
-// LoadConfigFiles reads the .network files from systemd's search path.
+// readConfigFile reads one .network file, escalating when it has to.
 //
-// Reading them here rather than through `networkctl cat` is deliberate: the
-// files are world-readable, a plain read needs no process at all, and it works
-// on a machine where networkd is not running — which is exactly the machine
-// where a user most wants to see what the configuration says.
+// The plain read is tried first because it costs nothing and is what a process
+// already running as root does. It is not always enough: netplan renders its
+// files into /run/systemd/network as mode 0640 root:systemd-network, so on a
+// stock Ubuntu cloud image the only file that actually configures the machine's
+// only managed link is the one an unprivileged tui-network cannot open. Found
+// in tui-lab on Ubuntu 24.04.4, where the tool listed the seven world-readable
+// templates from /usr/lib/systemd/network and silently dropped the one file the
+// editor exists to edit.
+//
+// Reading the files directly rather than through `networkctl cat` is still
+// deliberate: it works on a machine where networkd is not running, which is
+// exactly the machine where a user most wants to see what the configuration
+// says. The escalation only widens which files that read can reach.
+func readConfigFile(ctx context.Context, cat *runner.Runner, path string) (string, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // the path comes from systemd's own search directories
+	if err == nil {
+		return string(raw), nil
+	}
+	if !os.IsPermission(err) || cat == nil {
+		return "", err
+	}
+	return cat.Read(ctx, "cat", "--", path)
+}
+
+// loadConfigFiles reads the .network files from systemd's search path, using
+// the backend's escalated fallback for the ones a plain read cannot open.
+func (r *Real) loadConfigFiles(ctx context.Context, links []network.Link) []network.ConfigFile {
+	return loadConfigFiles(ctx, r.cat, links)
+}
+
+// LoadConfigFiles reads the .network files from systemd's search path with no
+// escalation available. It is the read a root process needs, and the one the
+// tests drive.
 func LoadConfigFiles(links []network.Link) []network.ConfigFile {
+	return loadConfigFiles(context.Background(), nil, links)
+}
+
+// loadConfigFiles is the shared implementation of both.
+func loadConfigFiles(ctx context.Context, cat *runner.Runner,
+	links []network.Link) []network.ConfigFile {
 	byPath := map[string][]string{}
 	for _, link := range links {
 		if link.NetworkFile != "" {
@@ -452,11 +500,11 @@ func LoadConfigFiles(links []network.Link) []network.ConfigFile {
 			}
 			seen[entry.Name()] = true
 			path := filepath.Join(dir, entry.Name())
-			raw, err := os.ReadFile(path)
+			raw, err := readConfigFile(ctx, cat, path)
 			if err != nil {
 				continue
 			}
-			file := ParseNetworkFile(path, string(raw))
+			file := ParseNetworkFile(path, raw)
 			file.Links = byPath[path]
 			files = append(files, file)
 		}

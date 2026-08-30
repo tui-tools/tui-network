@@ -151,6 +151,35 @@ case "$manager" in
     check "a .network file was found" \
       "$bin --check" \
       '"configFiles": [1-9]'
+
+    # 7. And it is *the right one*. A count alone is not enough: every systemd
+    #    ships a handful of world-readable templates in /usr/lib/systemd/network,
+    #    so a machine whose real configuration the tool could not open still
+    #    reports a non-zero count. This asks networkctl which file configures
+    #    the managed link and demands that exact path back — the read the
+    #    editor screen opens, asserted read-only.
+    #
+    #    It is the assertion that caught netplan: on an Ubuntu cloud image the
+    #    file is /run/systemd/network/10-netplan-*.network, mode 0640
+    #    root:systemd-network, and an unprivileged read of it fails.
+    managed_link=$(networkctl --no-legend list |
+      awk '$5 ~ /^(configured|configuring|pending)$/ {print $2; exit}')
+    netfile=$(networkctl status --no-pager --full "$managed_link" 2>/dev/null |
+      sed -n 's/^ *Network File: *//p' | head -1)
+    if [[ -z $netfile || $netfile == "n/a" ]]; then
+      echo "SKIP  $managed_link has no .network file to match"
+    else
+      check "the .network file of $managed_link is parsed ($netfile)" \
+        "$bin --check" \
+        "\"Path\": \"${netfile//./\\.}\""
+
+      # The path can be listed and the contents still be missing, which is
+      # exactly how the netplan failure would look after a half fix. Raw is
+      # the field the editor renders, so it must not be empty.
+      check "its contents were read, not just its name" \
+        "$bin --check | grep -A1 '\"Path\": \"$netfile\"'" \
+        '"Raw": ".+"'
+    fi
     ;;
 
   networkmanager)
@@ -193,7 +222,7 @@ case "$manager" in
     ;;
 esac
 
-# 7. --check must never change anything: the link list is identical after it.
+# 8. --check must never change anything: the link list is identical after it.
 before=$(networkctl --no-legend list)
 $bin --check >/dev/null 2>&1
 after=$(networkctl --no-legend list)
