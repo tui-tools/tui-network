@@ -2,6 +2,10 @@
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/tui-tools/tui-network/badge)](https://scorecard.dev/viewer/?uri=github.com/tui-tools/tui-network)
 
+> **Beta.** Beta: the family is days old and still changing. Package names,
+> flags and keys may move without notice until 1.0. Pin versions, and report
+> what breaks.
+
 A terminal UI for the machine's network. It shows the links you actually have —
 with their addresses, routes, DNS and the `.network` file behind each one — and
 **previews the exact command line of every change before running it**.
@@ -122,7 +126,7 @@ Upgrades then arrive with the rest of your system updates.
 ### Any distribution, static binary
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-network/releases/download/v0.1.1/tui-network_0.1.1_linux_amd64.tar.gz | tar -xz tui-network
+curl -fsSL https://github.com/tui-tools/tui-network/releases/download/v0.1.2/tui-network_0.1.2_linux_amd64.tar.gz | tar -xz tui-network
 sudo install -m0755 tui-network /usr/local/bin/tui-network
 ```
 
@@ -460,6 +464,15 @@ widgets, the config loader and the command runner shared by the whole family.
   Ubuntu cloud image that is the only file configuring the machine's only
   managed link. Without it the screen showed seven `/usr/lib` templates and not
   the one file the editor exists to edit — found in `tui-lab` on Ubuntu 24.04.4.
+
+## Contributing
+
+Contributions arrive as pull requests: read
+[CONTRIBUTING.md](https://github.com/tui-tools/tui-kit/blob/main/CONTRIBUTING.md)
+in tui-kit, which covers the flow and the bar a change has to clear for every
+tool in the family. Vulnerabilities go through
+[SECURITY.md](https://github.com/tui-tools/tui-kit/blob/main/SECURITY.md)
+instead, privately, never in a public issue.
 
 ## License
 

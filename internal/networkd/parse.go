@@ -339,7 +339,11 @@ func ParseStatusText(out string) network.Link {
 		if trimmed := strings.TrimLeft(line, "●* \t"); strings.Contains(trimmed, ": ") &&
 			!strings.HasPrefix(line, " ") && link.Name == "" {
 			head, name, _ := strings.Cut(trimmed, ": ")
-			if index, err := strconv.Atoi(strings.TrimSpace(head)); err == nil {
+			// An interface name is one bare word. Anything else on that line
+			// is not the header, and taking it for a name would put a value
+			// the tool never really read into the commands it offers to run.
+			index, err := strconv.Atoi(strings.TrimSpace(head))
+			if err == nil && len(strings.Fields(name)) == 1 {
 				link.Index, link.Name = index, strings.TrimSpace(name)
 				continue
 			}
@@ -393,7 +397,11 @@ func applyStatusField(link *network.Link, key, value string) {
 			link.MTU = mtu
 		}
 	case "Address":
-		link.Addresses = append(link.Addresses, parseTextAddress(value))
+		// A line that carries no address at all ("Address: /") is dropped
+		// rather than shown as an empty row.
+		if address := parseTextAddress(value); address.Address != "" {
+			link.Addresses = append(link.Addresses, address)
+		}
 		if strings.Contains(value, "DHCP4") || strings.Contains(value, "DHCP6") {
 			link.DHCP.Enabled = true
 			link.DHCP.Address = strings.Fields(value)[0]
