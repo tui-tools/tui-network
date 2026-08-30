@@ -115,6 +115,39 @@ check "check reads the network unprivileged" \
   "$bin --check" \
   '"backend": "systemd-networkd"'
 
+# --- the report block ------------------------------------------------------
+#
+# --report is read-only and unprivileged like the read path above, so it is
+# smoked without sudo. What is asserted is that it agrees with the backend this
+# machine drives, that it still answers under --demo, and that it keeps its
+# privacy promise — the block goes into a public issue, and everything else
+# this tool can print is an interface name or an address, so a home path or the
+# host name appearing in it is a bug, not a cosmetic detail.
+check "report names the backend it drives" \
+  "$bin --report" \
+  '^backend: systemd-networkd'
+
+check "report says the run was live" \
+  "$bin --report" \
+  '^mode: live$'
+
+check "report works in demo mode too" \
+  "$bin --demo --report" \
+  '^backend: demo$'
+
+check "and says so on the mode line" \
+  "$bin --demo --report" \
+  '^mode: demo'
+
+# The distro and kernel lines are excluded from the host-name search rather
+# than from the promise: they are built from /etc/os-release and from uname's
+# release and machine fields, never from its nodename, and on a guest called
+# "fedora" or "ubuntu" — which is most of them — the host name is a substring
+# of the distribution's own. Everything else in the block is searched.
+check "report leaks neither a home path nor the host name" \
+  "$bin --report | grep -vE '^(distro|kernel): ' | grep -cE '/home/|$(uname -n)' || true" \
+  '^0$'
+
 # 2. The link count matches what networkctl lists. This is the real parser
 #    test: a tool that fetched the output but failed to parse it reports zero.
 links=$(networkctl --no-legend list | grep -cE '^ *[0-9]+ ')

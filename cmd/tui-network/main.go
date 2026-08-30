@@ -43,6 +43,7 @@ func defaults() map[string]string {
 type options struct {
 	demo        bool
 	check       bool
+	report      bool
 	themePath   string
 	sudo        string
 	showVersion bool
@@ -61,6 +62,7 @@ func parseFlags(args []string, out *os.File) (options, error) {
 	fs.BoolVar(&opts.check, "check", false,
 		"read the network and print the parsed model as JSON, then exit "+
 			"(no UI, no changes); exit 1 if the backend cannot be read")
+	fs.BoolVar(&opts.report, "report", false, reportUsage)
 	fs.StringVar(&opts.themePath, "theme", "",
 		"path to an Omarchy-style colors.toml (overrides the config file)")
 	fs.StringVar(&opts.sudo, "sudo", "",
@@ -116,6 +118,24 @@ func run(args []string) error {
 	// The backend version is probed once, before the backend is built, because
 	// the backend needs the capability set: which reads exist on this systemd
 	// is a version question, and the answer comes from the manifest.
+	// The configured theme is handed to the kit through the same variable the
+	// user could set by hand, so precedence stays in one place. It is set
+	// before the backend is built so --report can name the theme the UI would
+	// have used even on a machine where no backend can be.
+	if path := cfg.Theme(); path != "" {
+		if err := os.Setenv("TUI_THEME", path); err != nil {
+			return err
+		}
+	}
+
+	// --report is the non-interactive path that must work everywhere. It reads
+	// nothing privileged and it survives a machine with no networkctl at all,
+	// because "there is no backend here" is one of the things a bug report has
+	// to be able to say. So it comes before the backend is required.
+	if opts.report {
+		return runReport(cfg, opts, os.Stdout)
+	}
+
 	backendCompat := probeCompat(context.Background(), opts.demo)
 
 	backend, err := pickBackend(cfg, opts, backendCompat)
@@ -127,14 +147,6 @@ func run(args []string) error {
 	// and never starts a terminal program.
 	if opts.check {
 		return runCheck(backend, backendCompat, os.Stdout)
-	}
-
-	// The configured theme is handed to the kit through the same variable the
-	// user could set by hand, so precedence stays in one place.
-	if path := cfg.Theme(); path != "" {
-		if err := os.Setenv("TUI_THEME", path); err != nil {
-			return err
-		}
 	}
 
 	program := tea.NewProgram(newApp(backend, theme.New(), backendCompat),

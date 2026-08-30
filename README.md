@@ -213,6 +213,7 @@ about it in the journal.
 tui-network                       # drive the real network
 tui-network --demo                # sample machine, no privileges needed
 tui-network --check               # read the network, print JSON, exit
+tui-network --report              # print what a bug report needs, exit
 tui-network --theme ~/mytheme/colors.toml
 tui-network --sudo ""             # run the commands directly (as root)
 tui-network --version
@@ -248,6 +249,45 @@ back writable.
 [tui-lab](https://github.com/tui-tools/tui-lab) uses it to test this tool
 against real machines on Ubuntu, Fedora and Omarchy Server; the assertions live
 in [`test/smoke.sh`](test/smoke.sh).
+
+### `--report`, for bug reports
+
+`--report` prints, in one block, everything a maintainer has to ask for
+otherwise: the tool and kit versions, the systemd the version probe read off
+`networkctl`, which of the two parsers that version selects, whether the link
+up and down keys existed at all, the distribution, the kernel, the terminal,
+the theme, the escalation prefix, and whether the running binary came from a
+package. It needs no privileges and reads no network, so it works on the
+machine where the bug is — including one with no `networkctl` at all, which is
+itself a thing worth reporting.
+
+```console
+$ tui-network --report
+tui-network 0.1.0 (kit v0.2.9)
+backend: systemd-networkd 257
+mode: live
+distro: fedora 42 (Fedora Linux 42 (Workstation Edition))
+kernel: 6.19.14-108.fc42.x86_64
+arch: x86_64
+locale: en_US.UTF-8
+term: xterm-256color
+theme: tokyo-night
+sudo: sudo -n
+root: no
+binary: /usr/bin/tui-network (packaged)
+reads: networkctl --json
+link up/down: available
+```
+
+The block is written to be published as it is: it carries no hostname, user
+name, home path or address, and no environment variable beyond `LANG`,
+`LC_ALL`, `TERM` and `TERM_PROGRAM`. A binary living under your home directory
+is reported as being there without naming the path. Nothing about your network
+is in it — not an interface name, not an address, not a DNS server. `--report`
+works with `--demo` too, where it says so on the `mode` line.
+
+The bug form asks for this block first — see
+[`.github/ISSUE_TEMPLATE/bug_report.yml`](.github/ISSUE_TEMPLATE/bug_report.yml).
 
 Reading the network needs no privileges at all — `networkctl list`,
 `resolvectl dns` and `ip route` answer to any user, and `tui-network` never
