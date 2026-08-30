@@ -193,7 +193,7 @@
     }
   },
   "security": {
-    "needs_sudo": "Reading the network needs no privileges at all: `networkctl list`, `resolvectl dns` and `ip route` answer to any user, and tui-network never escalates to read. Changes do: bringing a link up or down, reconfiguring it, renewing a lease, setting DNS at runtime, installing a .network file and reloading networkd. Escalation goes through `sudo -n`, which never prompts, and `--sudo \"\"` runs the commands directly when you are already root.",
+    "needs_sudo": "Reading needs no privileges: `networkctl list`, `resolvectl dns` and `ip route` answer to any user. Changes do: link up/down, reconfigure, renew, runtime DNS, installing a .network file and reloading networkd. Escalation is `sudo -n`, which never prompts.",
     "preview_before_run": true,
     "no_daemon": true,
     "no_network": true,
