@@ -421,13 +421,17 @@ func (r *Real) BuildWriteConfig(spec network.FileSpec) (network.WritePlan, error
 // stageFile writes the pending file to a private temporary directory and
 // returns its path. The directory is the user's own, so staging needs no
 // privileges; only the install step does.
+//
+// The staged copy is owner-only: it is a draft of a file the user has not
+// confirmed yet, and the install command sets the mode the installed file
+// actually gets, so nothing downstream depends on this one.
 func stageFile(destination, content string) (string, error) {
 	dir, err := os.MkdirTemp("", "tui-network-")
 	if err != nil {
 		return "", err
 	}
 	path := filepath.Join(dir, filepath.Base(destination))
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return "", err
 	}
 	return path, nil
