@@ -2,9 +2,9 @@
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/tui-tools/tui-network/badge)](https://scorecard.dev/viewer/?uri=github.com/tui-tools/tui-network)
 
-> **Beta.** Beta: the family is days old and still changing. Package names,
-> flags and keys may move without notice until 1.0. Pin versions, and report
-> what breaks.
+> **Beta.** The family is days old and still changing. Package names, flags
+> and keys may move without notice until 1.0. Pin versions, and report what
+> breaks.
 
 A terminal UI for the machine's network. It shows the links you actually have —
 with their addresses, routes, DNS and the `.network` file behind each one — and
