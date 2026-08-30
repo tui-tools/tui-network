@@ -23,7 +23,7 @@ in the [Omarchy](https://omarchy.org) visual style.
 ### Any distribution, static binary
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-network/releases/download/v{version}/tui-network_{version}_linux_amd64.tar.gz | tar -xz tui-network
+curl -fsSL https://github.com/tui-tools/tui-network/releases/download/v0.1.0/tui-network_0.1.0_linux_amd64.tar.gz | tar -xz tui-network
 sudo install -m0755 tui-network /usr/local/bin/tui-network
 ```
 
