@@ -196,7 +196,7 @@
     }
   },
   "security": {
-    "needs_sudo": "Reads are unprivileged: `networkctl list`, `resolvectl dns` and `ip route` answer to any user. Escalation is `sudo -n`, which never prompts, and covers a .network file netplan rendered mode 0640 plus every change: up/down, reconfigure, renew, runtime DNS, installing a file, reload.",
+    "needs_sudo": "Reads are unprivileged: `networkctl list`, `resolvectl dns` and `ip route` answer to any user. Escalation is `sudo -n`, which never prompts: the 0640 .network file netplan renders, and every change — up/down, reconfigure, renew, DNS, install, reload.",
     "preview_before_run": true,
     "no_daemon": true,
     "no_network": true,
