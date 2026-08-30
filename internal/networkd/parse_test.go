@@ -14,7 +14,7 @@ import (
 // 198.51.100.0/24, 02:00:00:00:00:0x).
 func read(t *testing.T, name string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", name))
+	data, err := os.ReadFile(filepath.Join("testdata", name)) //nolint:gosec // the name is a literal in the test above, and testdata is in the repository
 	if err != nil {
 		t.Fatalf("reading fixture: %v", err)
 	}

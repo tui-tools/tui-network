@@ -1,5 +1,7 @@
 <img src="assets/logo.png" alt="tui-network" width="240">
 
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/tui-tools/tui-network/badge)](https://scorecard.dev/viewer/?uri=github.com/tui-tools/tui-network)
+
 A terminal UI for the machine's network. It shows the links you actually have —
 with their addresses, routes, DNS and the `.network` file behind each one — and
 **previews the exact command line of every change before running it**.

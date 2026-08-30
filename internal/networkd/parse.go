@@ -3,6 +3,7 @@ package networkd
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"strconv"
@@ -596,7 +597,9 @@ func isDHCP(source string) bool {
 // boot. systemd reports lease times on that clock, so a wall-clock date would
 // be a lie; "2h13m since boot" is the honest reading.
 func formatUptime(usec uint64) string {
-	if usec == 0 {
+	// A stamp that would not fit in a Duration is not a boot time, it is a
+	// garbled field: say nothing rather than print a negative age.
+	if usec == 0 || usec > math.MaxInt64/uint64(time.Microsecond) {
 		return ""
 	}
 	d := time.Duration(usec) * time.Microsecond
