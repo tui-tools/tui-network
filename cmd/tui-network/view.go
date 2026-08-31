@@ -45,6 +45,8 @@ func (a *app) View() string {
 			a.width, a.height)
 	case modeDetail:
 		return a.detailView()
+	case modeDHCP:
+		return a.dhcpView()
 	}
 	return a.linksView()
 }
@@ -428,6 +430,7 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 		ui.KeyHint{Key: "c", Desc: "reconfigure"},
 		ui.KeyHint{Key: "e", Desc: "edit file"},
 		ui.KeyHint{Key: "s", Desc: "dns"},
+		ui.KeyHint{Key: "D", Desc: "dhcp"},
 		ui.KeyHint{Key: "r", Desc: "reload"},
 		ui.KeyHint{Key: "/", Desc: "filter"},
 		ui.KeyHint{Key: "?", Desc: "help"},
@@ -467,6 +470,9 @@ func helpKeys() []ui.KeyHint {
 		{Key: "f", Desc: "flush the resolver cache"},
 		{Key: "s / S", Desc: "set the link's DNS servers / search domains"},
 		{Key: "e", Desc: "edit the link's .network file, with a diff to confirm"},
+		{Key: "D", Desc: "the router's DHCP screen: pools, reservations and leases"},
+		{Key: "a / x", Desc: "on the DHCP screen: add / remove a reservation"},
+		{Key: "p", Desc: "on the DHCP screen: adjust a pool's range"},
 		{Key: "R", Desc: "re-read the network"},
 		{Key: "?", Desc: "this help"},
 		{Key: "q", Desc: "quit"},

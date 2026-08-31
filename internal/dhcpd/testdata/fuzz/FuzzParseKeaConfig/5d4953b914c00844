@@ -1,0 +1,2 @@
+go test fuzz v1
+string("{\"DhCp4\":{\"suBnet4\":[{\"pools\":[{\"pool\":\"0 0\"}]}]}}")

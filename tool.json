@@ -3,7 +3,7 @@
   "name": "tui-network",
   "binary": "tui-network",
   "tagline": "Links, addresses, routes and DNS, with every change previewed before it runs",
-  "description": "A terminal UI for the machine's network. It shows the links you actually have — state, type, addresses, gateway, MAC, MTU and driver — with the routing table, what systemd-resolved is using for DNS, and the `.network` file behind each link.\n\nOpen a link and you get the whole picture in one screen: its addresses and where each came from, its routes, its DNS servers and search domains, its DHCP lease, the `.network` file that configures it, and what systemd-networkd has been saying about it in the journal.\n\nChanges are previewed. Bringing a link up or down, reconfiguring it, renewing a lease, setting DNS at runtime, and editing a `.network` file — which shows a unified diff and then installs the file and reloads networkd — all go through a confirm dialog carrying the exact command line. A link systemd-networkd does not manage, because NetworkManager owns it, is shown read-only with the reason.\n\nRun `tui-network --demo` to drive a sample machine: every key works, every command is built and previewed for real, and nothing touches your system.",
+  "description": "A terminal UI for the machine's network. It shows the links you actually have — state, type, addresses, gateway, MAC, MTU and driver — with the routing table, what systemd-resolved is using for DNS, and the `.network` file behind each link.\n\nOpen a link and you get the whole picture in one screen: its addresses and where each came from, its routes, its DNS servers and search domains, its DHCP lease, the `.network` file that configures it, and what systemd-networkd has been saying about it in the journal.\n\nChanges are previewed. Bringing a link up or down, reconfiguring it, renewing a lease, setting DNS at runtime, and editing a `.network` file — which shows a unified diff and then installs the file and reloads networkd — all go through a confirm dialog carrying the exact command line. A link systemd-networkd does not manage, because NetworkManager owns it, is shown read-only with the reason.\n\nThe `D` screen reads the router's dnsmasq or Kea server: pools, reservations, leases, and previewed reservation and pool-range edits on dnsmasq.\n\nRun `tui-network --demo` to drive a sample machine: every key works, every command is built and previewed for real, and nothing touches your system.",
   "category": "network",
   "homepage": "https://github.com/tui-tools/tui-network",
   "repo": "https://github.com/tui-tools/tui-network",
@@ -64,6 +64,18 @@
     {
       "key": "s / S",
       "action": "Set the link's DNS servers or search domains"
+    },
+    {
+      "key": "D",
+      "action": "Open the router's DHCP screen: pools, reservations and leases"
+    },
+    {
+      "key": "a / x",
+      "action": "On the DHCP screen: add or remove a reservation (dnsmasq)"
+    },
+    {
+      "key": "p",
+      "action": "On the DHCP screen: adjust a pool's range (dnsmasq)"
     },
     {
       "key": "f",
@@ -134,6 +146,53 @@
         "259",
         "261"
       ]
+    },
+    {
+      "name": "dnsmasq",
+      "binary": "dnsmasq",
+      "versionCommand": [
+        "dnsmasq",
+        "--version"
+      ],
+      "versionRegex": "Dnsmasq version ([0-9.]+)",
+      "minimum": "2.80",
+      "searchPaths": [
+        "/usr/sbin/dnsmasq",
+        "/sbin/dnsmasq",
+        "/usr/bin/dnsmasq"
+      ],
+      "notes": [
+        {
+          "range": ">=2.80",
+          "impact": "the DHCP screen reads the lease file (/var/lib/misc/dnsmasq.leases), the `dhcp-range` pools and `dhcp-host` reservations from the configuration, and dnsmasq serves DNS and DHCP from one process, so the resolver view on the links screen is only what systemd-resolved reports"
+        },
+        {
+          "range": ">=2.80",
+          "impact": "reservations tui-network adds are written to a drop-in of its own (/etc/dnsmasq.d/tui-network.conf) and applied with `systemctl reload dnsmasq`; a pool range change needs `systemctl restart dnsmasq`, which briefly interrupts DNS and DHCP"
+        }
+      ],
+      "tested": []
+    },
+    {
+      "name": "kea",
+      "binary": "kea-dhcp4",
+      "versionCommand": [
+        "kea-dhcp4",
+        "-V"
+      ],
+      "versionRegex": "([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "minimum": "2.0.0",
+      "searchPaths": [
+        "/usr/sbin/kea-dhcp4",
+        "/usr/bin/kea-dhcp4"
+      ],
+      "notes": [
+        {
+          "range": ">=2.0.0",
+          "impact": "the DHCP screen reads Kea's pools and host reservations from its JSON config (/etc/kea/kea-dhcp4.conf, // and /* */ comments stripped) and its leases from the memfile CSV (/var/lib/kea/kea-leases4.csv); Kea is read-only here, so the add, remove and pool-range keys are not offered"
+        }
+      ],
+      "tested": []
     }
   ],
   "install": {

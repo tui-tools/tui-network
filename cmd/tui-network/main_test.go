@@ -8,6 +8,7 @@ import (
 
 	"github.com/tui-tools/tui-kit/compat"
 	"github.com/tui-tools/tui-kit/config"
+	"github.com/tui-tools/tui-network/internal/dhcpd"
 )
 
 // baseConfig is the configuration as it stands before the flags are folded in.
@@ -84,7 +85,7 @@ func TestCheckReportsTheModel(t *testing.T) {
 		t.Fatalf("pickBackend: %v", err)
 	}
 	var out bytes.Buffer
-	if err := runCheck(backend, compat.Result{}, &out); err != nil {
+	if err := runCheck(backend, compat.Result{}, dhcpd.NewFake(), compat.Result{}, &out); err != nil {
 		t.Fatalf("runCheck: %v", err)
 	}
 	for _, want := range []string{
