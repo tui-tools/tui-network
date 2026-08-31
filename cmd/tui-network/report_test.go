@@ -5,6 +5,9 @@ import (
 	"os/user"
 	"strings"
 	"testing"
+
+	"github.com/tui-tools/tui-kit/compat"
+	"github.com/tui-tools/tui-network/internal/dhcpd"
 )
 
 // TestRunReportDemo checks the half of the block this tool owns. The kit's own
@@ -14,7 +17,7 @@ import (
 func TestRunReportDemo(t *testing.T) {
 	var out strings.Builder
 	opts := options{demo: true, report: true}
-	if err := runReport(baseConfig(), opts, &out); err != nil {
+	if err := runReport(baseConfig(), opts, dhcpd.NewFake(), compat.Result{}, &out); err != nil {
 		t.Fatalf("runReport: %v", err)
 	}
 
@@ -46,7 +49,7 @@ func TestRunReportDemo(t *testing.T) {
 // nothing.
 func TestRunReportLive(t *testing.T) {
 	var out strings.Builder
-	if err := runReport(baseConfig(), options{report: true}, &out); err != nil {
+	if err := runReport(baseConfig(), options{report: true}, dhcpd.NewFake(), compat.Result{}, &out); err != nil {
 		t.Fatalf("runReport: %v", err)
 	}
 	got := out.String()
@@ -64,7 +67,7 @@ func TestRunReportLive(t *testing.T) {
 // this tool can print is an address or an interface name.
 func TestRunReportIsPublishable(t *testing.T) {
 	var out strings.Builder
-	if err := runReport(baseConfig(), options{report: true}, &out); err != nil {
+	if err := runReport(baseConfig(), options{report: true}, dhcpd.NewFake(), compat.Result{}, &out); err != nil {
 		t.Fatalf("runReport: %v", err)
 	}
 	got := out.String()

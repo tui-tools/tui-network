@@ -207,6 +207,24 @@ routes attached to it, its DNS servers and search domains, its DHCP lease, the
 `.network` file that configures it, and what systemd-networkd has been saying
 about it in the journal.
 
+## The router's DHCP and DNS
+
+`D` opens the DHCP screen: the piece a router profile needs on top of links,
+addresses and routes. It reads whichever DHCP server the machine runs — dnsmasq
+or ISC Kea, detected — and shows the server, the pools it hands out, the
+reservations that pin a host to an address, and the leases it has granted, each
+with its MAC, address, hostname and how long it has left. dnsmasq serves DNS and
+DHCP from one process, so the screen says so: on such a router the resolver view
+on the links screen is only what systemd-resolved reports.
+
+On a dnsmasq machine three changes are offered, each previewed like every other:
+add a reservation (`a`, written to a drop-in of the tool's own,
+`/etc/dnsmasq.d/tui-network.conf`), remove one (`x`), and adjust a pool's range
+(`p`). Each is a file edit shown as a unified diff, then installed and applied —
+a reservation with `systemctl reload dnsmasq`, a pool range with a restart,
+which the dialog says interrupts service. Kea is read-only for now, and a
+machine with neither server shows an empty screen that explains why.
+
 ## Usage
 
 ```sh
@@ -377,6 +395,10 @@ reconfigure or fight with whoever does own it.
 - Write a `.network` file from a guided form — match, DHCP mode, static address,
   gateway, DNS servers, search domains — reviewed as a unified diff, installed
   with `install -m 644` and applied with `networkctl reload`.
+- Read the router's DHCP server, dnsmasq or ISC Kea, detected: its pools,
+  reservations and leases, from the lease file and the configuration.
+- On dnsmasq, add or remove a reservation and adjust a pool's range, each
+  reviewed as a unified diff and applied with a `systemctl reload` or `restart`.
 - Show a link another manager owns as read-only, with the reason.
 - Follow the active Omarchy theme, and respect `NO_COLOR`.
 
@@ -394,6 +416,11 @@ reconfigure or fight with whoever does own it.
   agree to it.
 - **No live counters**, no traffic graph, no `ping`, no `lldp` view.
 - Routes are read-only: there is no key that adds or deletes one.
+- **DHCP on Kea is read-only.** Its pools, reservations and leases are shown; the
+  add, remove and pool-range keys are offered only on dnsmasq.
+- **No DHCP server lifecycle.** The DHCP screen edits reservations and pool
+  ranges; it does not enable, start or install a server, or create a pool from
+  nothing.
 
 ## Compatibility
 
@@ -420,6 +447,33 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | `<249` | `networkctl --json` does not exist, so the columns of `networkctl list` and the `Key: value` block of `networkctl status` are parsed instead; addresses carry no prefix length there, and the DHCP lease clock is not reported at all |
 | `<249` | `networkctl up` and `down` do not exist; the keys are dropped from the hint bar and reconfigure is offered in their place |
 | `>=245` | no released systemd emits JSON from `resolvectl status`, so DNS servers and search domains are read from the text output of `resolvectl dns` and `resolvectl domain` |
+
+### dnsmasq
+
+| | |
+| --- | --- |
+| Binary | `dnsmasq` |
+| Version read with | `dnsmasq --version` |
+| Minimum | 2.80 |
+| Tested | none yet |
+
+| Versions | What changes |
+| --- | --- |
+| `>=2.80` | the DHCP screen reads the lease file (/var/lib/misc/dnsmasq.leases), the `dhcp-range` pools and `dhcp-host` reservations from the configuration, and dnsmasq serves DNS and DHCP from one process, so the resolver view on the links screen is only what systemd-resolved reports |
+| `>=2.80` | reservations tui-network adds are written to a drop-in of its own (/etc/dnsmasq.d/tui-network.conf) and applied with `systemctl reload dnsmasq`; a pool range change needs `systemctl restart dnsmasq`, which briefly interrupts DNS and DHCP |
+
+### kea
+
+| | |
+| --- | --- |
+| Binary | `kea-dhcp4` |
+| Version read with | `kea-dhcp4 -V` |
+| Minimum | 2.0.0 |
+| Tested | none yet |
+
+| Versions | What changes |
+| --- | --- |
+| `>=2.0.0` | the DHCP screen reads Kea's pools and host reservations from its JSON config (/etc/kea/kea-dhcp4.conf, // and /* */ comments stripped) and its leases from the memfile CSV (/var/lib/kea/kea-leases4.csv); Kea is read-only here, so the add, remove and pool-range keys are not offered |
 
 The tested versions are generated from `compat/results.jsonl`, which the tool's
 own smoke test appends to when it runs against a real machine in

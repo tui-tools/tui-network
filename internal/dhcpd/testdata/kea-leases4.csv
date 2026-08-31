@@ -1,0 +1,4 @@
+address,hwaddr,client_id,valid_lifetime,expire,subnet_id,fqdn_fwd,fqdn_rev,hostname,state,user_context,pool_id
+192.0.2.50,00:00:5e:00:53:01,,3600,1893456000,1,0,0,laptop,0,,0
+192.0.2.51,00:00:5e:00:53:02,01:00:00:5e:00:53:02,3600,1893456300,1,1,1,desktop,0,,0
+192.0.2.52,00:00:5e:00:53:03,,3600,1893450000,1,0,0,,2,,0

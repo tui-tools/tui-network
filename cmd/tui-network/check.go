@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tui-tools/tui-kit/compat"
+	"github.com/tui-tools/tui-network/internal/dhcp"
 	"github.com/tui-tools/tui-network/internal/network"
 )
 
@@ -47,6 +48,31 @@ type checkReport struct {
 	Compat compat.Result `json:"compat"`
 	// Model is the parsed state in full.
 	Model network.Model `json:"model"`
+	// Dhcp is the router's DHCP server, read the same read-only way: which
+	// server is present and active, and how many pools, reservations and leases
+	// it has. It is its own block because it is its own backend.
+	Dhcp dhcpReport `json:"dhcp"`
+}
+
+// dhcpReport is the DHCP half of --check: the counts a smoke test asserts on
+// without walking the whole model, plus the parsed model in full.
+type dhcpReport struct {
+	// Backend is the detected server ("dnsmasq", "kea"), "none" when neither is
+	// present.
+	Backend string `json:"backend"`
+	// Present and Active report the server's state.
+	Present bool `json:"present"`
+	Active  bool `json:"active"`
+	// CombinedDNS reports that this server also answers DNS (dnsmasq does).
+	CombinedDNS bool `json:"combinedDns"`
+	// Pools, Reservations and Leases are the totals the model carries.
+	Pools        int `json:"pools"`
+	Reservations int `json:"reservations"`
+	Leases       int `json:"leases"`
+	// Compat is the DHCP server version probe.
+	Compat compat.Result `json:"compat"`
+	// Model is the parsed DHCP state in full.
+	Model dhcp.Model `json:"model"`
 }
 
 // runCheck exercises the backend's real read path and prints the parsed model
@@ -58,7 +84,7 @@ type checkReport struct {
 // the links, every one of them comes back unmanaged, and the report says so.
 // That is the read path working, and it is what the smoke test asserts there.
 func runCheck(backend network.Backend, backendCompat compat.Result,
-	out io.Writer) error {
+	dhcpBackend dhcp.Backend, dhcpCompat compat.Result, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
 	defer cancel()
 
@@ -80,6 +106,7 @@ func runCheck(backend network.Backend, backendCompat compat.Result,
 		ConfigFiles:     len(model.ConfigFiles),
 		Compat:          backendCompat,
 		Model:           model,
+		Dhcp:            dhcpCheck(ctx, dhcpBackend, dhcpCompat),
 	}
 	for _, link := range model.Links {
 		if link.Managed {
@@ -90,4 +117,29 @@ func runCheck(backend network.Backend, backendCompat compat.Result,
 	encoder := json.NewEncoder(out)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(report)
+}
+
+// dhcpCheck reads the DHCP server the read-only way and folds it into the
+// report. A machine with no server is not a failure: the block says the server
+// is absent, which is exactly what the smoke test asserts there.
+func dhcpCheck(ctx context.Context, backend dhcp.Backend, dhcpCompat compat.Result) dhcpReport {
+	model, err := backend.Load(ctx)
+	report := dhcpReport{
+		Backend: model.Server.Kind,
+		Compat:  dhcpCompat,
+		Model:   model,
+	}
+	if report.Backend == dhcp.KindNone {
+		report.Backend = "none"
+	}
+	if err != nil {
+		return report
+	}
+	report.Present = model.Server.Present
+	report.Active = model.Server.Active
+	report.CombinedDNS = model.Server.CombinedDNS
+	report.Pools = len(model.Pools)
+	report.Reservations = len(model.Reservations)
+	report.Leases = len(model.Leases)
+	return report
 }

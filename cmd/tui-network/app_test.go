@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tui-tools/tui-kit/compat"
 	"github.com/tui-tools/tui-kit/theme"
+	"github.com/tui-tools/tui-network/internal/dhcpd"
 	"github.com/tui-tools/tui-network/internal/network"
 	"github.com/tui-tools/tui-network/internal/networkd"
 )
@@ -17,7 +18,7 @@ import (
 func newTestApp(t *testing.T) (*app, *networkd.Fake) {
 	t.Helper()
 	backend := networkd.NewFake()
-	a := newApp(backend, theme.New(), compat.Result{})
+	a := newApp(backend, dhcpd.NewFake(), theme.New(), compat.Result{}, compat.Result{})
 	a.width, a.height = 100, 30
 	drain(t, a, a.Init())
 	return a, backend
@@ -365,7 +366,7 @@ func TestUpAndDownAreHiddenOnAnOldSystemd(t *testing.T) {
 	}, func(context.Context, []string) (string, error) {
 		return "systemd 245 (245.4-4ubuntu3.24)", nil
 	})
-	a := newApp(networkd.NewFake(), theme.New(), old)
+	a := newApp(networkd.NewFake(), dhcpd.NewFake(), theme.New(), old, compat.Result{})
 	a.width, a.height = 100, 30
 	drain(t, a, a.Init())
 	selectLink(t, a, "enp1s0")

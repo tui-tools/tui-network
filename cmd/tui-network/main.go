@@ -15,6 +15,8 @@ import (
 	"github.com/tui-tools/tui-kit/compat"
 	"github.com/tui-tools/tui-kit/config"
 	"github.com/tui-tools/tui-kit/theme"
+	"github.com/tui-tools/tui-network/internal/dhcp"
+	"github.com/tui-tools/tui-network/internal/dhcpd"
 	"github.com/tui-tools/tui-network/internal/network"
 	"github.com/tui-tools/tui-network/internal/networkd"
 )
@@ -128,12 +130,18 @@ func run(args []string) error {
 		}
 	}
 
+	// The DHCP backend is detected the same way whichever path we take: it
+	// reads the router's DHCP server (dnsmasq or Kea), and answers with an
+	// explained empty model on a machine that runs neither.
+	dhcpBackend := pickDHCP(cfg, opts)
+	dhcpCompat := probeDHCPCompat(context.Background(), opts.demo, dhcpBackend.Name())
+
 	// --report is the non-interactive path that must work everywhere. It reads
 	// nothing privileged and it survives a machine with no networkctl at all,
 	// because "there is no backend here" is one of the things a bug report has
 	// to be able to say. So it comes before the backend is required.
 	if opts.report {
-		return runReport(cfg, opts, os.Stdout)
+		return runReport(cfg, opts, dhcpBackend, dhcpCompat, os.Stdout)
 	}
 
 	backendCompat := probeCompat(context.Background(), opts.demo)
@@ -146,10 +154,11 @@ func run(args []string) error {
 	// --check is the non-interactive path: it reads the backend and prints,
 	// and never starts a terminal program.
 	if opts.check {
-		return runCheck(backend, backendCompat, os.Stdout)
+		return runCheck(backend, backendCompat, dhcpBackend, dhcpCompat, os.Stdout)
 	}
 
-	program := tea.NewProgram(newApp(backend, theme.New(), backendCompat),
+	program := tea.NewProgram(
+		newApp(backend, dhcpBackend, theme.New(), backendCompat, dhcpCompat),
 		tea.WithAltScreen())
 	_, err = program.Run()
 	return err
@@ -175,4 +184,15 @@ func pickBackend(cfg config.Config, opts options,
 		return networkd.NewFake(), nil
 	}
 	return networkd.NewReal(cfg.SudoPrefix(), backendCompat.Caps())
+}
+
+// pickDHCP returns the demo DHCP backend or the real one. The real one never
+// fails to construct: a machine with no DHCP server still gets a backend whose
+// Load explains the emptiness.
+func pickDHCP(cfg config.Config, opts options) dhcp.Backend {
+	if opts.demo {
+		return dhcpd.NewFake()
+	}
+	backend, _ := dhcpd.NewReal(cfg.SudoPrefix())
+	return backend
 }

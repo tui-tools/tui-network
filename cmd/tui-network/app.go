@@ -10,6 +10,7 @@ import (
 	"github.com/tui-tools/tui-kit/compat"
 	"github.com/tui-tools/tui-kit/theme"
 	"github.com/tui-tools/tui-kit/ui"
+	"github.com/tui-tools/tui-network/internal/dhcp"
 	"github.com/tui-tools/tui-network/internal/network"
 	"github.com/tui-tools/tui-network/internal/networkd"
 )
@@ -27,6 +28,7 @@ const (
 	modePicker
 	modeForm
 	modeHelp
+	modeDHCP
 )
 
 // inputTarget says what a text prompt's answer applies to.
@@ -36,6 +38,9 @@ const (
 	inputNone inputTarget = iota
 	inputDNS
 	inputDomains
+	inputAddReservation
+	inputRemoveReservation
+	inputPoolRange
 )
 
 // app is the tui-network Bubble Tea model.
@@ -45,6 +50,20 @@ type app struct {
 	caps    network.Capabilities
 	// backendCompat is what the version probe found, rendered in the header.
 	backendCompat compat.Result
+
+	// dhcp is the DHCP-server backend behind the router screen, its capability
+	// set and its own version probe.
+	dhcp       dhcp.Backend
+	dhcpCaps   dhcp.Capabilities
+	dhcpCompat compat.Result
+	dhcpModel  dhcp.Model
+	// dhcpLoaded reports that the DHCP model has been read at least once, so the
+	// screen tells "reading…" from "nothing here".
+	dhcpLoaded bool
+	dhcpOffset int
+	// fromDHCP records that an open dialog was opened from the DHCP screen, so
+	// closing it returns there rather than to the links list.
+	fromDHCP bool
 
 	model network.Model
 	// visible holds the links left after the filter, in display order.
@@ -93,27 +112,42 @@ type detailMsg struct {
 	err     error
 }
 
+// dhcpLoadedMsg carries the result of a DHCP model read.
+type dhcpLoadedMsg struct {
+	model dhcp.Model
+	err   error
+}
+
 // ranMsg carries the result of running a plan.
 type ranMsg struct {
 	// title is the plan's title, echoed in the status line.
 	title  string
 	output string
 	err    error
+	// viaDHCP records that the plan ran against the DHCP backend, so the right
+	// model is re-read afterwards.
+	viaDHCP bool
 }
 
 // plan is what a confirm dialog is holding: one or more commands, run in
-// order. Most actions are a single command; writing a .network file is two,
-// the install and the reload, and both are shown before either runs.
+// order. Most actions are a single command; writing a file is two, the install
+// and the reload, and both are shown before either runs.
 type plan struct {
 	title    string
 	commands []network.Command
+	// viaDHCP routes the plan to the DHCP backend instead of the links one.
+	viaDHCP bool
 }
 
-// newApp builds the model around a backend.
-func newApp(backend network.Backend, th theme.Theme,
-	backendCompat compat.Result) *app {
+// newApp builds the model around the two backends: the links backend and the
+// DHCP-server backend.
+func newApp(backend network.Backend, dhcpBackend dhcp.Backend, th theme.Theme,
+	backendCompat, dhcpCompat compat.Result) *app {
 	a := &app{
 		backend:       backend,
+		dhcp:          dhcpBackend,
+		dhcpCaps:      dhcpBackend.Capabilities(),
+		dhcpCompat:    dhcpCompat,
 		theme:         th,
 		caps:          backend.Capabilities(),
 		backendCompat: backendCompat,
@@ -148,6 +182,17 @@ func (a *app) load() tea.Cmd {
 	}
 }
 
+// loadDHCP reads the DHCP server's state in the background.
+func (a *app) loadDHCP() tea.Cmd {
+	backend := a.dhcp
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		model, err := backend.Load(ctx)
+		return dhcpLoadedMsg{model: model, err: err}
+	}
+}
+
 // loadDetail re-reads one link and its journal in the background.
 func (a *app) loadDetail(name string) tea.Cmd {
 	backend := a.backend
@@ -169,24 +214,36 @@ func (a *app) loadDetail(name string) tea.Cmd {
 }
 
 // run executes a confirmed plan in the background, one command at a time,
-// stopping at the first failure.
+// stopping at the first failure. A DHCP plan runs against the DHCP backend, so
+// its commands go through the runner that owns dnsmasq's binaries.
 func (a *app) run(p plan) tea.Cmd {
-	backend := a.backend
+	runner := a.backend.Run
+	if p.viaDHCP {
+		runner = a.dhcp.Run
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		var outputs []string
 		for _, cmd := range p.commands {
-			out, err := backend.Run(ctx, cmd)
+			out, err := runner(ctx, cmd)
 			if err != nil {
-				return ranMsg{title: p.title, output: out, err: err}
+				return ranMsg{title: p.title, output: out, err: err, viaDHCP: p.viaDHCP}
 			}
 			if trimmed := strings.TrimSpace(out); trimmed != "" {
 				outputs = append(outputs, trimmed)
 			}
 		}
-		return ranMsg{title: p.title, output: strings.Join(outputs, "; ")}
+		return ranMsg{title: p.title, output: strings.Join(outputs, "; "), viaDHCP: p.viaDHCP}
 	}
+}
+
+// previewCmd renders a command through the backend that will run it.
+func (a *app) previewCmd(cmd network.Command, viaDHCP bool) string {
+	if viaDHCP {
+		return a.dhcp.Preview(cmd)
+	}
+	return a.backend.Preview(cmd)
 }
 
 // setStatus records a plain message for the status line.
@@ -238,19 +295,34 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.detail, a.detailJournal = msg.link, msg.journal
 		return a, nil
 
-	case ranMsg:
-		a.busy = false
+	case dhcpLoadedMsg:
+		a.dhcpLoaded = true
 		if msg.err != nil {
 			a.setStatus(ui.StatusError, msg.err.Error())
-			return a, a.load()
+			return a, nil
+		}
+		a.dhcpModel = msg.model
+		return a, nil
+
+	case ranMsg:
+		a.busy = false
+		reload := a.load
+		if msg.viaDHCP {
+			reload = a.loadDHCP
+		}
+		if msg.err != nil {
+			a.setStatus(ui.StatusError, msg.err.Error())
+			return a, reload()
 		}
 		summary := strings.TrimSpace(msg.output)
 		if summary == "" {
 			summary = "done"
 		}
 		a.setStatusf(ui.StatusOK, "%s: %s", msg.title, firstLine(summary))
-		a.loading = true
-		return a, a.load()
+		if !msg.viaDHCP {
+			a.loading = true
+		}
+		return a, reload()
 
 	case tea.KeyMsg:
 		return a.handleKey(msg)
@@ -308,6 +380,8 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modeHelp:
 		a.mode = modeLinks
 		return a, nil
+	case modeDHCP:
+		return a.handleDHCPKey(msg)
 	case modeDetail:
 		return a.handleDetailKey(msg)
 	default:
@@ -330,12 +404,16 @@ func (a *app) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 	a.busy = true
-	a.setStatusf(ui.StatusInfo, "running %s…", a.backend.Preview(pending.commands[0]))
+	a.setStatusf(ui.StatusInfo, "running %s…",
+		a.previewCmd(pending.commands[0], pending.viaDHCP))
 	return a, a.run(pending)
 }
 
 // returnMode is the screen a dialog goes back to.
 func (a *app) returnMode() mode {
+	if a.fromDHCP {
+		return modeDHCP
+	}
 	if a.detail.Name != "" {
 		return modeDetail
 	}
@@ -388,6 +466,12 @@ func (a *app) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.buildAndConfirm("Set search domains", func() (network.Command, error) {
 			return a.backend.BuildSetDomains(link, values)
 		})
+	case inputAddReservation:
+		return a, a.submitAddReservation(values)
+	case inputRemoveReservation:
+		return a, a.submitRemoveReservation(values)
+	case inputPoolRange:
+		return a, a.submitPoolRange(values)
 	default:
 		return a, nil
 	}
@@ -457,19 +541,19 @@ func (a *app) submitForm() tea.Cmd {
 	a.confirm = ui.Confirm{
 		Title:   "Write " + write.Path,
 		Body:    a.diffForDialog(write.Diff),
-		Command: a.previewAll(write.Commands),
+		Command: a.previewAll(write.Commands, false),
 		Danger:  true,
 		Payload: plan{title: "Write " + write.Path, commands: write.Commands},
 	}
 	return nil
 }
 
-// previewAll renders every command of a plan, one per line, each with the
-// prompt the dialog puts in front of the first one.
-func (a *app) previewAll(commands []network.Command) string {
+// previewAll renders every command of a plan, one per line, each through the
+// backend that will run it.
+func (a *app) previewAll(commands []network.Command, viaDHCP bool) string {
 	previews := make([]string, 0, len(commands))
 	for _, cmd := range commands {
-		previews = append(previews, a.backend.Preview(cmd))
+		previews = append(previews, a.previewCmd(cmd, viaDHCP))
 	}
 	return strings.Join(previews, "\n$ ")
 }
@@ -500,6 +584,8 @@ func (a *app) handleLinksKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.mode = modeFilter
 	case "enter":
 		return a, a.openDetail()
+	case "D":
+		return a, a.openDHCP()
 	case "R", "ctrl+r":
 		a.loading = true
 		return a, a.load()
@@ -507,6 +593,230 @@ func (a *app) handleLinksKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.handleActionKey(msg)
 	}
 	return a, nil
+}
+
+// openDHCP switches to the router's DHCP screen, reading the server the first
+// time it is opened.
+func (a *app) openDHCP() tea.Cmd {
+	a.mode = modeDHCP
+	a.dhcpOffset = 0
+	if !a.dhcpLoaded {
+		return a.loadDHCP()
+	}
+	return nil
+}
+
+// handleDHCPKey handles the router's DHCP screen: scroll it, re-read it, or open
+// one of the three previewed mutations dnsmasq offers.
+func (a *app) handleDHCPKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "esc", "backspace", "left", "D":
+		a.mode, a.dhcpOffset, a.fromDHCP = modeLinks, 0, false
+		return a, nil
+	case "?":
+		a.mode = modeHelp
+		return a, nil
+	case "j", "down":
+		a.dhcpOffset++
+		return a, nil
+	case "k", "up":
+		a.dhcpOffset = max(a.dhcpOffset-1, 0)
+		return a, nil
+	case "g", "home":
+		a.dhcpOffset = 0
+		return a, nil
+	case "pgdown", "ctrl+f":
+		a.dhcpOffset += a.detailHeight()
+		return a, nil
+	case "pgup", "ctrl+b":
+		a.dhcpOffset = max(a.dhcpOffset-a.detailHeight(), 0)
+		return a, nil
+	case "R", "ctrl+r":
+		return a, a.loadDHCP()
+	case "a":
+		return a, a.promptAddReservation()
+	case "x":
+		return a, a.promptRemoveReservation()
+	case "p":
+		return a, a.promptPoolRange()
+	}
+	return a, nil
+}
+
+// requireDHCPMutation checks that the detected server offers a mutation, and
+// says why when it does not — Kea is read-only in this phase, and a machine
+// with no server has nothing to change.
+func (a *app) requireDHCPMutation(offered bool) bool {
+	if a.dhcpModel.Server.Kind == dhcp.KindNone {
+		a.setStatus(ui.StatusWarn, "no DHCP server here to change")
+		return false
+	}
+	if !offered {
+		a.setStatusf(ui.StatusWarn, "%s is read-only in this version",
+			a.dhcpModel.Server.Kind)
+		return false
+	}
+	return true
+}
+
+// openDHCPInput opens a text prompt that belongs to the DHCP screen.
+func (a *app) openDHCPInput(target inputTarget, title, placeholder, help string) {
+	a.input = ui.NewInput(title, placeholder, "")
+	a.input.Help = help
+	a.inputFor = target
+	a.fromDHCP = true
+	a.mode = modeInput
+}
+
+// promptAddReservation asks for the reservation to add.
+func (a *app) promptAddReservation() tea.Cmd {
+	if !a.requireDHCPMutation(a.dhcpCaps.SupportsAddReservation) {
+		return nil
+	}
+	a.openDHCPInput(inputAddReservation, "Add a reservation",
+		"00:00:5e:00:53:10 192.0.2.20 nas",
+		"MAC, address and an optional hostname. Lands in "+a.dhcpCaps.ManagedFile+".")
+	return nil
+}
+
+// promptRemoveReservation asks which reservation to remove.
+func (a *app) promptRemoveReservation() tea.Cmd {
+	if !a.requireDHCPMutation(a.dhcpCaps.SupportsRemoveReservation) {
+		return nil
+	}
+	if len(a.dhcpModel.Reservations) == 0 {
+		a.setStatus(ui.StatusWarn, "there are no reservations to remove")
+		return nil
+	}
+	a.openDHCPInput(inputRemoveReservation, "Remove a reservation",
+		"00:00:5e:00:53:01 or 192.0.2.10",
+		"The MAC or address of the reservation to remove.")
+	return nil
+}
+
+// promptPoolRange asks for a pool's new range.
+func (a *app) promptPoolRange() tea.Cmd {
+	if !a.requireDHCPMutation(a.dhcpCaps.SupportsSetPoolRange) {
+		return nil
+	}
+	if len(a.dhcpModel.Pools) == 0 {
+		a.setStatus(ui.StatusWarn, "there is no pool to adjust")
+		return nil
+	}
+	help := "The new first and last address of the pool."
+	placeholder := "192.0.2.50 192.0.2.200"
+	if len(a.dhcpModel.Pools) > 1 {
+		help = "The current first address, then the new first and last: " +
+			"start new-start new-end."
+		placeholder = "192.0.2.50 192.0.2.40 192.0.2.200"
+	}
+	a.openDHCPInput(inputPoolRange, "Adjust a pool range", placeholder, help)
+	return nil
+}
+
+// submitAddReservation builds the previewed add from the prompt's fields.
+func (a *app) submitAddReservation(fields []string) tea.Cmd {
+	if len(fields) < 2 {
+		a.setStatus(ui.StatusWarn, "give a MAC and an address, e.g. 00:00:5e:00:53:10 192.0.2.20")
+		return nil
+	}
+	res := dhcp.Reservation{MAC: fields[0], IP: fields[1], Source: a.dhcpCaps.ManagedFile}
+	if len(fields) >= 3 {
+		res.Hostname = fields[2]
+	}
+	return a.confirmDHCPWrite("Add reservation "+res.MAC, func() (dhcp.WritePlan, error) {
+		return a.dhcp.BuildAddReservation(res)
+	})
+}
+
+// submitRemoveReservation finds the reservation the prompt names and previews
+// its removal.
+func (a *app) submitRemoveReservation(fields []string) tea.Cmd {
+	if len(fields) != 1 {
+		a.setStatus(ui.StatusWarn, "give one MAC or address to remove")
+		return nil
+	}
+	res, ok := a.findReservation(fields[0])
+	if !ok {
+		a.setStatusf(ui.StatusWarn, "no reservation matches %q", fields[0])
+		return nil
+	}
+	return a.confirmDHCPWrite("Remove reservation "+identify(res), func() (dhcp.WritePlan, error) {
+		return a.dhcp.BuildRemoveReservation(res)
+	})
+}
+
+// submitPoolRange resolves which pool to change and previews the new range.
+func (a *app) submitPoolRange(fields []string) tea.Cmd {
+	var orig dhcp.Pool
+	var newStart, newEnd string
+	switch {
+	case len(fields) == 2 && len(a.dhcpModel.Pools) == 1:
+		orig, newStart, newEnd = a.dhcpModel.Pools[0], fields[0], fields[1]
+	case len(fields) == 3:
+		pool, ok := a.findPool(fields[0])
+		if !ok {
+			a.setStatusf(ui.StatusWarn, "no pool starts at %q", fields[0])
+			return nil
+		}
+		orig, newStart, newEnd = pool, fields[1], fields[2]
+	default:
+		a.setStatus(ui.StatusWarn,
+			"give the new first and last address (or start new-start new-end)")
+		return nil
+	}
+	return a.confirmDHCPWrite("Adjust pool "+orig.Start+"–"+orig.End,
+		func() (dhcp.WritePlan, error) {
+			return a.dhcp.BuildSetPoolRange(orig, newStart, newEnd)
+		})
+}
+
+// findReservation returns the reservation matching a MAC or an address.
+func (a *app) findReservation(key string) (dhcp.Reservation, bool) {
+	for _, res := range a.dhcpModel.Reservations {
+		if strings.EqualFold(res.MAC, key) || res.IP == key {
+			return res, true
+		}
+	}
+	return dhcp.Reservation{}, false
+}
+
+// findPool returns the pool whose range starts at the given address.
+func (a *app) findPool(start string) (dhcp.Pool, bool) {
+	for _, pool := range a.dhcpModel.Pools {
+		if pool.Start == start {
+			return pool, true
+		}
+	}
+	return dhcp.Pool{}, false
+}
+
+// identify names a reservation for a dialog title: its MAC, else its address.
+func identify(res dhcp.Reservation) string {
+	if res.MAC != "" {
+		return res.MAC
+	}
+	return res.IP
+}
+
+// confirmDHCPWrite runs a DHCP write builder and opens the confirm dialog with
+// the diff and the commands that apply it, or reports the builder's error.
+func (a *app) confirmDHCPWrite(title string,
+	build func() (dhcp.WritePlan, error)) tea.Cmd {
+	write, err := build()
+	if err != nil {
+		a.setStatus(ui.StatusError, err.Error())
+		return nil
+	}
+	a.mode = modeConfirm
+	a.confirm = ui.Confirm{
+		Title:   title,
+		Body:    a.diffForDialog(write.Diff),
+		Command: a.previewAll(write.Commands, true),
+		Danger:  true,
+		Payload: plan{title: title, commands: write.Commands, viaDHCP: true},
+	}
+	return nil
 }
 
 // handleDetailKey handles the per-link screen. The action keys are the same

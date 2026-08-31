@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/tui-tools/tui-kit/compat"
 	"github.com/tui-tools/tui-kit/config"
 	"github.com/tui-tools/tui-kit/report"
 	"github.com/tui-tools/tui-kit/theme"
+	"github.com/tui-tools/tui-network/internal/dhcp"
 )
 
 // The two manifest features the systemd version gates. Between them they
@@ -32,7 +34,8 @@ const (
 // for filing one. For the same reason a machine with no networkctl still gets
 // a report, with the backend error as one of its lines: "there is nothing here
 // to drive" is a bug report, not a refusal.
-func runReport(cfg config.Config, opts options, out io.Writer) error {
+func runReport(cfg config.Config, opts options, dhcpBackend dhcp.Backend,
+	dhcpCompat compat.Result, out io.Writer) error {
 	palette, _ := theme.ResolvePalette()
 
 	// The same probe --check and the header use. There is one version probe in
@@ -78,6 +81,15 @@ func runReport(cfg config.Config, opts options, out io.Writer) error {
 			report.Field{Key: "link up/down", Value: linkUpDownLine(caps.Has(linkUpDownFeature))},
 		)
 	}
+	// The DHCP server is the router half of this tool, and a report about a
+	// wrong lease or an unread pool has to name which server was behind it and
+	// what version it was. Like the rest of --report this stays out of the
+	// state: it names the detected server and the version the probe read, never
+	// whether the service is up (that is a read --check does).
+	info.Extra = append(info.Extra, report.Field{
+		Key: "dhcp backend", Value: dhcpBackendLine(opts.demo, dhcpBackend.Name(), dhcpCompat),
+	})
+
 	if selectError != "" {
 		info.Extra = append(info.Extra, report.Field{
 			Key: "backend error", Value: selectError,
@@ -86,6 +98,32 @@ func runReport(cfg config.Config, opts options, out io.Writer) error {
 
 	_, err := io.WriteString(out, report.Render(info))
 	return err
+}
+
+// dhcpBackendLine names the DHCP/DNS server behind the router screen and the
+// version the probe read. dnsmasq is called out as the server that answers DNS
+// too, because on such a router the DNS the links screen reads from
+// systemd-resolved is not the whole picture.
+func dhcpBackendLine(demo bool, kind string, dhcpCompat compat.Result) string {
+	switch {
+	case demo:
+		return "demo (dnsmasq, DNS and DHCP)"
+	case kind == dhcp.KindDnsmasq:
+		return "dnsmasq " + versionOrUnknown(dhcpCompat) + " (serves DNS and DHCP)"
+	case kind == dhcp.KindKea:
+		return "ISC Kea " + versionOrUnknown(dhcpCompat) + " (DHCP only)"
+	default:
+		return "none detected (no dnsmasq or Kea)"
+	}
+}
+
+// versionOrUnknown is the probed version, or a placeholder when it could not be
+// read.
+func versionOrUnknown(dhcpCompat compat.Result) string {
+	if dhcpCompat.Version == "" {
+		return "(version unknown)"
+	}
+	return dhcpCompat.Version
 }
 
 // readsLine says which of the two parsers built the model. `networkctl --json`

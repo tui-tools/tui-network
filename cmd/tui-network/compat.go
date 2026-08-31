@@ -37,3 +37,26 @@ func probeCompat(ctx context.Context, demo bool) compat.Result {
 	}
 	return compat.Probe(ctx, backend)
 }
+
+// probeDHCPCompat reads the version of the DHCP server this tool detected, the
+// same way probeCompat reads systemd's — against the manifest backend block for
+// the detected server, so the minimum and the notes come from tool.json rather
+// than from a version number written here.
+//
+// It returns the zero Result under --demo and on a machine with no DHCP server:
+// there is no real server to name a version for, and the zero Result answers
+// "unknown", which the header renders as a plain backend name.
+func probeDHCPCompat(ctx context.Context, demo bool, dhcpBackendName string) compat.Result {
+	if demo || dhcpBackendName == "" || dhcpBackendName == "dhcp" {
+		return compat.Result{}
+	}
+	m, err := manifest.Load(tuinetwork.ManifestJSON)
+	if err != nil {
+		return compat.Result{}
+	}
+	backend, ok := m.Backend(dhcpBackendName)
+	if !ok {
+		return compat.Result{}
+	}
+	return compat.Probe(ctx, backend)
+}
