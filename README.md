@@ -225,6 +225,27 @@ a reservation with `systemctl reload dnsmasq`, a pool range with a restart,
 which the dialog says interrupts service. Kea is read-only for now, and a
 machine with neither server shows an empty screen that explains why.
 
+## The router's gateways and failover
+
+`w` opens the Gateways screen, for a router with more than one uplink. It reads
+the default routes from `ip -j route` — a multipath default expanded into one
+row per next hop — and lists each candidate gateway with its interface, address
+and metric, marking the one the kernel is using now: the lowest-metric default
+of its family. An optional read, `ip -j route get`, resolves how each gateway is
+reached, so a row shows whether its own interface is the egress. None of that
+touches the machine; it is all a route lookup.
+
+Two changes are offered, each previewed with the exact command. `s` sets the
+default route to the selected uplink, and `x` fails over to the top standby —
+both run `ip route replace default via <gw> dev <if> metric <n>` at a metric
+that wins the kernel's lowest-metric race, so the chosen uplink becomes the
+default at once. That is a live change: it re-points the default route now, and
+the dialog says so, because it can drop the session it runs over. On a
+`systemd-networkd`-managed link, `P` also writes a persistent `[Route]` drop-in
+under `/etc/systemd/network/<file>.d/50-tui-gateway.conf`, shown as a diff and
+applied with `networkctl reload`, so the priority survives a reconfigure. An
+uplink another manager owns gets the live switch only, and the screen says why.
+
 ## Usage
 
 ```sh
@@ -351,6 +372,10 @@ name that does not end in `.network`.
 | `f` | Flush the resolver cache |
 | `s` / `S` | Set the link's DNS servers / search domains |
 | `e` | Edit the link's `.network` file, with a diff to confirm |
+| `D` | The router's DHCP screen: pools, reservations and leases |
+| `w` | The Gateways screen: the uplinks and the default route |
+| `s` / `x` | On the Gateways screen: set the default / fail over to a standby |
+| `P` | On the Gateways screen: make an uplink's priority persistent |
 | `R` | Re-read the network |
 | `?` | Help |
 | `q` | Quit |
@@ -399,6 +424,11 @@ reconfigure or fight with whoever does own it.
   reservations and leases, from the lease file and the configuration.
 - On dnsmasq, add or remove a reservation and adjust a pool's range, each
   reviewed as a unified diff and applied with a `systemctl reload` or `restart`.
+- Enumerate a multi-uplink router's gateways from the default routes, mark the
+  active one, and probe each uplink's reachability with `ip -j route get`.
+- Switch the default route or fail over to a standby uplink, live with `ip route
+  replace` and persistently with a `systemd-networkd` drop-in on a managed link,
+  each previewed with the exact command.
 - Show a link another manager owns as read-only, with the reason.
 - Follow the active Omarchy theme, and respect `NO_COLOR`.
 
@@ -447,6 +477,7 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | `<249` | `networkctl --json` does not exist, so the columns of `networkctl list` and the `Key: value` block of `networkctl status` are parsed instead; addresses carry no prefix length there, and the DHCP lease clock is not reported at all |
 | `<249` | `networkctl up` and `down` do not exist; the keys are dropped from the hint bar and reconfigure is offered in their place |
 | `>=245` | no released systemd emits JSON from `resolvectl status`, so DNS servers and search domains are read from the text output of `resolvectl dns` and `resolvectl domain` |
+| `>=245` | the Gateways screen (w) reads the default routes from `ip -j route` (multipath expanded per next hop) and reachability from `ip -j route get`; the default-route switch and failover run `ip route replace` live, and a managed link also gets a persistent `[Route]` drop-in reloaded with `networkctl` |
 
 ### dnsmasq
 

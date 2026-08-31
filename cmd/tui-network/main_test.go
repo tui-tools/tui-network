@@ -94,6 +94,8 @@ func TestCheckReportsTheModel(t *testing.T) {
 		`"links": 3`,
 		`"managed": 1`,
 		`"foreignManager": "NetworkManager"`,
+		`"count": 2`,
+		`"multipleUplinks": true`,
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("--check output is missing %s", want)

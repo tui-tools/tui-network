@@ -7,6 +7,7 @@ package network
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -81,6 +82,252 @@ type Route struct {
 	Family string
 	// Table is the routing table name, empty for the main table.
 	Table string
+	// NextHops are the legs of a multipath route, empty for a single-path
+	// route. A multipath default route is several uplinks the kernel balances
+	// across, so the Gateways view expands each leg into its own candidate.
+	NextHops []NextHop
+}
+
+// NextHop is one leg of a multipath route: the gateway to send to and the link
+// to send it over.
+type NextHop struct {
+	Gateway string
+	Link    string
+	// Weight is the leg's share of a multipath route, zero when unweighted.
+	Weight int
+}
+
+// Egress is what `ip route get` resolves for a destination: which link the
+// kernel would send over, through which gateway, from which source address. It
+// is the read-only reachability probe the Gateways screen uses — a route
+// lookup, never a packet.
+type Egress struct {
+	// Dev is the link the kernel would send over, empty when it could not
+	// resolve one.
+	Dev string
+	// Gateway is the next hop, empty for an on-link destination.
+	Gateway string
+	// Source is the preferred source address the kernel would use.
+	Source string
+}
+
+// Found reports whether the lookup resolved a link at all.
+func (e Egress) Found() bool { return e.Dev != "" }
+
+// Gateway is one candidate uplink: a default route's gateway, the link it
+// leaves by, its priority, and whether it is the one the kernel is using right
+// now. It is derived from the routing table (and the .network files behind it),
+// not read as its own thing.
+type Gateway struct {
+	// Interface is the link the default route leaves by.
+	Interface string
+	// Address is the gateway (next hop) address.
+	Address string
+	// Metric is the route's priority: the lowest metric per family is the one
+	// the kernel uses.
+	Metric int
+	// Family is "ipv4" or "ipv6".
+	Family string
+	// Protocol is who installed the default route ("dhcp", "static", "boot").
+	Protocol string
+	// Active reports that this gateway is (part of) the default the kernel is
+	// using now: the lowest-metric default route of its family.
+	Active bool
+	// Multipath reports that this gateway is one leg of a multipath default
+	// route, which the kernel load-balances rather than fails over.
+	Multipath bool
+	// Managed reports that systemd-networkd owns the interface, which is what
+	// decides whether a persistent drop-in can be written for it.
+	Managed bool
+	// Persistent reports that a .network file sets a Gateway= for this
+	// interface, so the priority survives a reconfigure.
+	Persistent bool
+	// ConfigFile is the .network file that configures the interface, when one
+	// was found — where a persistent drop-in attaches.
+	ConfigFile string
+	// Egress is what `ip route get` said about reaching this gateway, when the
+	// optional reachability probe ran. Dev empty means it was not probed or did
+	// not resolve.
+	Egress Egress
+}
+
+// Reachable reports that the reachability probe resolved this gateway to its
+// own interface, which is the read that a gateway is directly reachable.
+func (g Gateway) Reachable() bool {
+	return g.Egress.Dev != "" && g.Egress.Dev == g.Interface
+}
+
+// Gateways derives the candidate uplinks from the model's routing table: every
+// default route that carries a gateway (a multipath route once per leg),
+// cross-referenced with the links and their .network files. The lowest-metric
+// default route of each family is flagged Active, which is the one the kernel
+// is using.
+//
+// It is a pure read of what Load already gathered: no command runs here, so the
+// same derivation serves the screen, --check and the tests.
+func Gateways(m Model) []Gateway {
+	// The lowest metric seen per family decides which entries are active.
+	minMetric := map[string]int{}
+	seen := map[string]bool{}
+	for _, r := range m.Routes {
+		if r.Destination != "default" {
+			continue
+		}
+		for _, family := range []string{r.Family} {
+			if _, ok := minMetric[family]; !ok || r.Metric < minMetric[family] {
+				if hasGateway(r) {
+					minMetric[family] = r.Metric
+					seen[family] = true
+				}
+			}
+		}
+	}
+
+	var gws []Gateway
+	for _, r := range m.Routes {
+		if r.Destination != "default" {
+			continue
+		}
+		for _, leg := range routeLegs(r) {
+			gw := Gateway{
+				Interface: leg.Link,
+				Address:   leg.Gateway,
+				Metric:    r.Metric,
+				Family:    r.Family,
+				Protocol:  r.Protocol,
+				Multipath: len(r.NextHops) > 0,
+			}
+			if seen[r.Family] && r.Metric == minMetric[r.Family] {
+				gw.Active = true
+			}
+			m.annotateGateway(&gw)
+			gws = append(gws, gw)
+		}
+	}
+	sortGateways(gws)
+	return gws
+}
+
+// hasGateway reports whether a default route names a gateway, directly or
+// through a multipath leg. A default route with no gateway at all (a link-only
+// default) is not a candidate uplink.
+func hasGateway(r Route) bool {
+	if r.Gateway != "" {
+		return true
+	}
+	for _, nh := range r.NextHops {
+		if nh.Gateway != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// routeLegs returns the (gateway, link) pairs a default route contributes: its
+// single hop, or one per multipath leg. Legs with no gateway are dropped.
+func routeLegs(r Route) []NextHop {
+	if len(r.NextHops) > 0 {
+		var legs []NextHop
+		for _, nh := range r.NextHops {
+			if nh.Gateway != "" {
+				legs = append(legs, nh)
+			}
+		}
+		return legs
+	}
+	if r.Gateway == "" {
+		return nil
+	}
+	return []NextHop{{Gateway: r.Gateway, Link: r.Link}}
+}
+
+// annotateGateway fills in the facts that come from the links and their
+// .network files rather than from the routing table: whether networkd manages
+// the interface, and whether a file already sets a gateway for it.
+func (m Model) annotateGateway(gw *Gateway) {
+	link, ok := m.Link(gw.Interface)
+	if !ok {
+		return
+	}
+	gw.Managed = link.Managed
+	file, ok := m.ConfigFor(link)
+	if !ok {
+		return
+	}
+	gw.ConfigFile = file.Path
+	if _, ok := file.Get("Network", "Gateway"); ok {
+		gw.Persistent = true
+	}
+	if _, ok := file.Get("Route", "Gateway"); ok {
+		gw.Persistent = true
+	}
+}
+
+// sortGateways orders the uplinks for display: active first, then by family,
+// then by metric, then by interface — so the one in use is on top and the
+// standbys follow in priority order.
+func sortGateways(gws []Gateway) {
+	sort.SliceStable(gws, func(i, j int) bool {
+		a, b := gws[i], gws[j]
+		if a.Active != b.Active {
+			return a.Active
+		}
+		if a.Family != b.Family {
+			return a.Family < b.Family
+		}
+		if a.Metric != b.Metric {
+			return a.Metric < b.Metric
+		}
+		return a.Interface < b.Interface
+	})
+}
+
+// PromoteMetric returns a route metric that makes gw the active default among
+// gws: one below the lowest metric of the other default routes of the same
+// family, floored at zero. It is the number the "set default" and "failover"
+// commands write, so the chosen uplink wins the kernel's lowest-metric race.
+func PromoteMetric(gws []Gateway, gw Gateway) int {
+	lowestOther := -1
+	for _, other := range gws {
+		if other.Family != gw.Family {
+			continue
+		}
+		if other.Interface == gw.Interface && other.Address == gw.Address {
+			continue
+		}
+		if lowestOther < 0 || other.Metric < lowestOther {
+			lowestOther = other.Metric
+		}
+	}
+	if lowestOther <= 0 {
+		return 0
+	}
+	return lowestOther - 1
+}
+
+// Standby returns the highest-priority gateway that is not currently active,
+// for the family of the active default — the uplink a manual failover promotes.
+func Standby(gws []Gateway) (Gateway, bool) {
+	activeFamily := ""
+	for _, gw := range gws {
+		if gw.Active {
+			activeFamily = gw.Family
+			break
+		}
+	}
+	best, found := Gateway{}, false
+	for _, gw := range gws {
+		if gw.Active || gw.Address == "" {
+			continue
+		}
+		if activeFamily != "" && gw.Family != activeFamily {
+			continue
+		}
+		if !found || gw.Metric < best.Metric {
+			best, found = gw, true
+		}
+	}
+	return best, found
 }
 
 // DHCP is what a link's dynamic configuration lease looks like. Every field is
@@ -365,6 +612,21 @@ type Backend interface {
 	// commands that install it and reload the manager. Nothing is installed
 	// until those commands are run.
 	BuildWriteConfig(spec FileSpec) (WritePlan, error)
+
+	// Egress resolves how the kernel would reach a gateway, with a read-only
+	// `ip route get`. It is the optional reachability probe the Gateways
+	// screen runs: a route lookup, never a packet.
+	Egress(ctx context.Context, gw Gateway) (Egress, error)
+	// BuildSetDefaultGateway builds the live command that makes a gateway the
+	// default route at the given metric — the runtime switch and the manual
+	// failover both go through it. It is destructive: it changes routing and
+	// can drop the session it runs over.
+	BuildSetDefaultGateway(gw Gateway, metric int) (Command, error)
+	// BuildPersistGateway renders a systemd-networkd drop-in that sets a
+	// gateway's default-route priority durably, and returns the diff plus the
+	// commands that install and reload it. It is offered only for a
+	// networkd-managed interface that already has a .network file to attach to.
+	BuildPersistGateway(gw Gateway, metric int) (WritePlan, error)
 }
 
 // WritePlan is a file change the user is about to make: what the file will

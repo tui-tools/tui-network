@@ -231,22 +231,13 @@ const unmanagedReason = "systemd-networkd reports this link as unmanaged, " +
 // text values here, which is why this parser is so much shorter than the
 // networkctl one.
 func ParseRoutesJSON(out string) ([]network.Route, error) {
-	var raw []struct {
-		Dst      string `json:"dst"`
-		Gateway  string `json:"gateway"`
-		Dev      string `json:"dev"`
-		Protocol string `json:"protocol"`
-		Scope    string `json:"scope"`
-		PrefSrc  string `json:"prefsrc"`
-		Metric   int    `json:"metric"`
-		Table    string `json:"table"`
-	}
+	var raw []jsonIPRoute
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return nil, fmt.Errorf("ip route: %w", err)
 	}
 	routes := make([]network.Route, 0, len(raw))
 	for _, r := range raw {
-		routes = append(routes, network.Route{
+		route := network.Route{
 			Destination: r.Dst,
 			Gateway:     r.Gateway,
 			Link:        r.Dev,
@@ -255,10 +246,79 @@ func ParseRoutesJSON(out string) ([]network.Route, error) {
 			Scope:       r.Scope,
 			Metric:      r.Metric,
 			Table:       r.Table,
-			Family:      routeFamily(r.Dst, r.Gateway),
-		})
+		}
+		gatewayForFamily := r.Gateway
+		for _, nh := range r.NextHops {
+			leg := network.NextHop{
+				Gateway: bareField(nh.Gateway),
+				Link:    bareField(nh.Dev),
+				Weight:  nh.Weight,
+			}
+			route.NextHops = append(route.NextHops, leg)
+			if gatewayForFamily == "" {
+				gatewayForFamily = leg.Gateway
+			}
+		}
+		route.Family = routeFamily(r.Dst, gatewayForFamily)
+		routes = append(routes, route)
 	}
 	return routes, nil
+}
+
+// jsonIPRoute is one entry of `ip -j route`. iproute2 prints text values here,
+// so unlike the networkctl decoder this needs no byte-array handling. A
+// multipath route carries its legs in `nexthops` and no top-level gateway.
+type jsonIPRoute struct {
+	Dst      string `json:"dst"`
+	Gateway  string `json:"gateway"`
+	Dev      string `json:"dev"`
+	Protocol string `json:"protocol"`
+	Scope    string `json:"scope"`
+	PrefSrc  string `json:"prefsrc"`
+	Metric   int    `json:"metric"`
+	Table    string `json:"table"`
+	NextHops []struct {
+		Gateway string `json:"gateway"`
+		Dev     string `json:"dev"`
+		Weight  int    `json:"weight"`
+	} `json:"nexthops"`
+}
+
+// ParseRouteGet reads `ip -j route get <destination>` into the egress the
+// kernel would use: the link, the next-hop gateway and the source address. The
+// command answers with a single-element array, so the first entry is the whole
+// answer. It is a read — a route lookup, not a packet — so it is safe on the
+// read path.
+func ParseRouteGet(out string) (network.Egress, error) {
+	var raw []struct {
+		Dev     string `json:"dev"`
+		Gateway string `json:"gateway"`
+		PrefSrc string `json:"prefsrc"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return network.Egress{}, fmt.Errorf("ip route get: %w", err)
+	}
+	if len(raw) == 0 {
+		return network.Egress{}, nil
+	}
+	return network.Egress{
+		Dev:     bareField(raw[0].Dev),
+		Gateway: bareField(raw[0].Gateway),
+		Source:  bareField(raw[0].PrefSrc),
+	}, nil
+}
+
+// bareField returns a value the UI can print and a builder can trust: the
+// trimmed text, or an empty string when it still carries interior whitespace.
+// The kernel's own output never has spaces in a device name or an address, so a
+// value that does is malformed rather than meaningful, and dropping it is safer
+// than passing it on to a row or an argv.
+func bareField(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if strings.ContainsAny(trimmed, " \t\n") {
+		return ""
+	}
+	return trimmed
 }
 
 // routeFamily decides which family a route belongs to from the addresses it

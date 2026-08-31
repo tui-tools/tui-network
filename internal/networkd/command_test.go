@@ -278,3 +278,106 @@ func TestFileName(t *testing.T) {
 		t.Errorf("FileName = %q", got)
 	}
 }
+
+func TestBuildSetDefaultGateway(t *testing.T) {
+	gw := network.Gateway{Interface: "wan0", Address: "192.0.2.1", Family: "ipv4"}
+	cmd, err := BuildSetDefaultGateway(gw, 99)
+	if err != nil {
+		t.Fatalf("BuildSetDefaultGateway: %v", err)
+	}
+	want := "ip route replace default via 192.0.2.1 dev wan0 metric 99"
+	if got := cmd.String(); got != want {
+		t.Errorf("argv %q, want %q", got, want)
+	}
+	if !cmd.Destructive {
+		t.Errorf("re-pointing the default route is a destructive change")
+	}
+	if cmd.Description == "" {
+		t.Errorf("a command with no description cannot be confirmed")
+	}
+
+	// An IPv6 gateway needs the -6 selector so the command touches the v6 table.
+	v6 := network.Gateway{Interface: "wan0", Address: "2001:db8::1", Family: "ipv6"}
+	cmd6, err := BuildSetDefaultGateway(v6, 50)
+	if err != nil {
+		t.Fatalf("BuildSetDefaultGateway v6: %v", err)
+	}
+	if got := cmd6.String(); got != "ip -6 route replace default via 2001:db8::1 dev wan0 metric 50" {
+		t.Errorf("v6 argv %q", got)
+	}
+}
+
+func TestBuildSetDefaultGatewayRejects(t *testing.T) {
+	// The interface, the gateway and the metric all reach an argv run as root,
+	// so anything that is not what it claims to be is refused before a command
+	// exists.
+	tests := []struct {
+		gw     network.Gateway
+		metric int
+	}{
+		{network.Gateway{Interface: "wan0; reboot", Address: "192.0.2.1"}, 1},
+		{network.Gateway{Interface: "wan0", Address: "not-an-ip"}, 1},
+		{network.Gateway{Interface: "wan0", Address: "192.0.2.1 ; id"}, 1},
+		{network.Gateway{Interface: "wan0", Address: "192.0.2.1"}, -1},
+	}
+	for _, test := range tests {
+		if _, err := BuildSetDefaultGateway(test.gw, test.metric); err == nil {
+			t.Errorf("BuildSetDefaultGateway accepted %+v metric %d", test.gw, test.metric)
+		}
+	}
+}
+
+func TestRenderGatewayDropin(t *testing.T) {
+	gw := network.Gateway{Interface: "wan0", Address: "192.0.2.1", Family: "ipv4"}
+	text, err := RenderGatewayDropin(gw, 100)
+	if err != nil {
+		t.Fatalf("RenderGatewayDropin: %v", err)
+	}
+	for _, want := range []string{"[Route]\n", "Gateway=192.0.2.1\n", "Metric=100\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("drop-in is missing %q:\n%s", want, text)
+		}
+	}
+	// What is written must parse back into a setting the reader recognises.
+	file := ParseNetworkFile("/etc/systemd/network/10-wan0.network.d/50-tui-gateway.conf", text)
+	if got, _ := file.Get("Route", "Gateway"); got != "192.0.2.1" {
+		t.Errorf("round trip lost the gateway, got %q", got)
+	}
+}
+
+func TestDropinPathAndCheck(t *testing.T) {
+	path := dropinPath("/usr/lib/systemd/network/10-wan0.network")
+	want := ConfigDir + "/10-wan0.network.d/50-tui-gateway.conf"
+	if path != want {
+		t.Errorf("dropinPath = %q, want %q", path, want)
+	}
+	if err := checkDropinPath(path); err != nil {
+		t.Errorf("checkDropinPath rejected its own path: %v", err)
+	}
+	for _, bad := range []string{
+		"/etc/passwd",
+		ConfigDir + "/10-wan0.network.d/other.conf",
+		ConfigDir + "/50-tui-gateway.conf",
+		"/tmp/x/10-wan0.network.d/50-tui-gateway.conf",
+	} {
+		if err := checkDropinPath(bad); err == nil {
+			t.Errorf("checkDropinPath accepted %q", bad)
+		}
+	}
+}
+
+func TestBuildInstallDropinCreatesTheDirectory(t *testing.T) {
+	dest := ConfigDir + "/10-wan0.network.d/50-tui-gateway.conf"
+	cmd, err := BuildInstallDropin("/tmp/x/50-tui-gateway.conf", dest)
+	if err != nil {
+		t.Fatalf("BuildInstallDropin: %v", err)
+	}
+	// -D makes install create the .network.d directory, so there is no separate
+	// mkdir to preview and no window with the wrong mode.
+	if !strings.Contains(cmd.String(), "install -D -m 644") {
+		t.Errorf("install command = %q, want -D", cmd.String())
+	}
+	if !cmd.Destructive {
+		t.Errorf("writing a drop-in is a destructive change")
+	}
+}
