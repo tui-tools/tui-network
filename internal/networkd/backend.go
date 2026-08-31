@@ -418,6 +418,83 @@ func (r *Real) BuildWriteConfig(spec network.FileSpec) (network.WritePlan, error
 	}, nil
 }
 
+// Egress resolves how the kernel would reach a gateway, with a read-only
+// `ip route get`. It is the reachability probe the Gateways screen runs: a
+// route lookup that names the egress link, never a packet on the wire.
+func (r *Real) Egress(ctx context.Context, gw network.Gateway) (network.Egress, error) {
+	if r.ip == nil {
+		return network.Egress{}, fmt.Errorf("networkd: the ip command is not available")
+	}
+	if err := checkGatewayAddr(gw.Address); err != nil {
+		return network.Egress{}, err
+	}
+	args := []string{"ip", "-j"}
+	if gw.Family == "ipv6" {
+		args = append(args, "-6")
+	}
+	args = append(args, "route", "get", gw.Address)
+	out, err := r.ip.Read(ctx, args...)
+	if err != nil {
+		return network.Egress{}, err
+	}
+	return ParseRouteGet(out)
+}
+
+// BuildSetDefaultGateway builds the live default-route switch.
+func (r *Real) BuildSetDefaultGateway(gw network.Gateway, metric int) (network.Command, error) {
+	return BuildSetDefaultGateway(gw, metric)
+}
+
+// BuildPersistGateway renders the drop-in that makes a gateway's priority
+// durable and returns the diff plus the commands that install and reload it.
+// It is offered only for a networkd-managed interface that already has a
+// .network file: the drop-in attaches to that file, and a link networkd does
+// not own, or one with no file yet, has nothing to attach to.
+func (r *Real) BuildPersistGateway(gw network.Gateway, metric int) (network.WritePlan, error) {
+	if !gw.Managed {
+		return network.WritePlan{}, fmt.Errorf(
+			"networkd: %s is not managed by systemd-networkd, "+
+				"so its gateway cannot be made persistent here", gw.Interface)
+	}
+	if gw.ConfigFile == "" {
+		return network.WritePlan{}, fmt.Errorf(
+			"networkd: %s has no .network file to attach a gateway drop-in to; "+
+				"write one first with the link editor", gw.Interface)
+	}
+	dest := dropinPath(gw.ConfigFile)
+	current, err := os.ReadFile(dest) //nolint:gosec // dest is built from ConfigDir and a validated file name
+	if err != nil && !os.IsNotExist(err) {
+		return network.WritePlan{}, err
+	}
+	before := string(current)
+	content, err := RenderGatewayDropin(gw, metric)
+	if err != nil {
+		return network.WritePlan{}, err
+	}
+	if before == content {
+		return network.WritePlan{}, fmt.Errorf("%s already says exactly this", dest)
+	}
+	temp, err := stageFile(dest, content)
+	if err != nil {
+		return network.WritePlan{}, err
+	}
+	installCmd, err := BuildInstallDropin(temp, dest)
+	if err != nil {
+		return network.WritePlan{}, err
+	}
+	reloadCmd, err := BuildReload()
+	if err != nil {
+		return network.WritePlan{}, err
+	}
+	return network.WritePlan{
+		Path:     dest,
+		Content:  content,
+		Diff:     Diff(dest, before, content),
+		TempPath: temp,
+		Commands: []network.Command{installCmd, reloadCmd},
+	}, nil
+}
+
 // stageFile writes the pending file to a private temporary directory and
 // returns its path. The directory is the user's own, so staging needs no
 // privileges; only the install step does.

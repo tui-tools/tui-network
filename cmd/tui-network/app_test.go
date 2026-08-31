@@ -312,6 +312,11 @@ func TestRendersAtEveryWidth(t *testing.T) {
 				a.form = newConfigForm("enp1s0",
 					network.FileSpec{MatchName: "enp1s0", DHCP: "yes"}, a.caps)
 			},
+			"gateways": func() {
+				a.mode = modeGateways
+				a.gatewaysLoaded = true
+				a.gateways = network.Gateways(a.model)
+			},
 		}
 		for name, setup := range screens {
 			setup()
@@ -340,6 +345,156 @@ func lineWidth(line string) int {
 		}
 	}
 	return width
+}
+
+// selectGateway moves the gateway cursor to an uplink by interface name.
+func selectGateway(t *testing.T, a *app, iface string) {
+	t.Helper()
+	for i, gw := range a.gateways {
+		if gw.Interface == iface {
+			a.gatewayCursor = i
+			return
+		}
+	}
+	t.Fatalf("no gateway on %q in the sample machine", iface)
+}
+
+func TestGatewaysScreenListsTheUplinks(t *testing.T) {
+	a, _ := newTestApp(t)
+	drain(t, a, press(a, "w"))
+	if a.mode != modeGateways {
+		t.Fatalf("w did not open the Gateways screen (status: %s)", a.status)
+	}
+	if len(a.gateways) != 2 {
+		t.Fatalf("got %d uplinks, want 2", len(a.gateways))
+	}
+	// The active default sorts first, and the reachability probe has run.
+	if !a.gateways[0].Active || a.gateways[0].Interface != "enp1s0" {
+		t.Errorf("first uplink = %+v, want enp1s0 active", a.gateways[0])
+	}
+	if !a.gateways[0].Reachable() {
+		t.Errorf("the demo probe should resolve the active uplink as reachable")
+	}
+	view := a.View()
+	for _, want := range []string{"Gateways", "enp1s0", "198.51.100.1"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the Gateways screen is missing %q", want)
+		}
+	}
+}
+
+// TestSetDefaultGatewayPreviewsAndSwitches is the item-7 promise: the exact
+// `ip route replace` shown in the dialog is what runs, and the demo's active
+// default really moves to the chosen uplink.
+func TestSetDefaultGatewayPreviewsAndSwitches(t *testing.T) {
+	a, backend := newTestApp(t)
+	drain(t, a, press(a, "w"))
+	selectGateway(t, a, "wlan0")
+
+	drain(t, a, press(a, "s"))
+	if a.mode != modeConfirm {
+		t.Fatalf("s did not open a confirm dialog (status: %s)", a.status)
+	}
+	want := "sudo -n ip route replace default via 198.51.100.1 dev wlan0 metric 99"
+	if a.confirm.Command != want {
+		t.Fatalf("previewed %q, want %q", a.confirm.Command, want)
+	}
+
+	drain(t, a, press(a, "y"))
+	ran := backend.Ran()
+	if len(ran) != 1 {
+		t.Fatalf("ran %d commands, want 1", len(ran))
+	}
+	if got := backend.Preview(ran[0]); got != want {
+		t.Errorf("ran %q, want the previewed %q", got, want)
+	}
+	// The switch took effect: wlan0 is the active default now.
+	for _, gw := range a.gateways {
+		if gw.Interface == "wlan0" && !gw.Active {
+			t.Errorf("wlan0 did not become the active default: %+v", gw)
+		}
+	}
+}
+
+func TestFailoverPromotesTheStandby(t *testing.T) {
+	a, _ := newTestApp(t)
+	drain(t, a, press(a, "w"))
+	// The cursor is on the active uplink; failover ignores it and promotes the
+	// standby regardless of what is selected.
+	drain(t, a, press(a, "x"))
+	if a.mode != modeConfirm {
+		t.Fatalf("x did not open a confirm dialog (status: %s)", a.status)
+	}
+	if !strings.Contains(a.confirm.Title, "Fail over to wlan0") {
+		t.Errorf("failover title = %q", a.confirm.Title)
+	}
+	want := "sudo -n ip route replace default via 198.51.100.1 dev wlan0 metric 99"
+	if a.confirm.Command != want {
+		t.Errorf("failover previewed %q, want %q", a.confirm.Command, want)
+	}
+}
+
+func TestSetDefaultOnTheActiveUplinkIsANoOp(t *testing.T) {
+	a, backend := newTestApp(t)
+	drain(t, a, press(a, "w"))
+	selectGateway(t, a, "enp1s0") // already the default
+	drain(t, a, press(a, "s"))
+	if a.mode == modeConfirm {
+		t.Errorf("setting the active uplink as default opened a dialog")
+	}
+	if len(backend.Ran()) != 0 {
+		t.Errorf("a no-op switch ran a command")
+	}
+	if !strings.Contains(a.status, "already the default") {
+		t.Errorf("status = %q", a.status)
+	}
+}
+
+// TestPersistGatewayWritesADropin covers the persistent form: a managed uplink
+// gets a networkd drop-in, previewed with its diff and the install-and-reload
+// commands, before anything is written.
+func TestPersistGatewayWritesADropin(t *testing.T) {
+	a, backend := newTestApp(t)
+	drain(t, a, press(a, "w"))
+	selectGateway(t, a, "enp1s0")
+
+	drain(t, a, press(a, "P"))
+	if a.mode != modeConfirm {
+		t.Fatalf("P did not open a confirm dialog (status: %s)", a.status)
+	}
+	if !strings.Contains(a.confirm.Body, "+Gateway=192.0.2.1") {
+		t.Errorf("the drop-in diff is missing the gateway:\n%s", a.confirm.Body)
+	}
+	lines := strings.Split(a.confirm.Command, "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "install -D -m 644") ||
+		!strings.Contains(lines[1], "networkctl reload") {
+		t.Fatalf("previewed commands = %q", a.confirm.Command)
+	}
+	// The destination is the .network.d drop-in of the active uplink's file.
+	if !strings.Contains(lines[0], "10-wired.network.d/50-tui-gateway.conf") {
+		t.Errorf("drop-in destination = %q", lines[0])
+	}
+
+	drain(t, a, press(a, "y"))
+	if len(backend.Ran()) != 2 {
+		t.Errorf("persisting ran %d commands, want the install and the reload", len(backend.Ran()))
+	}
+}
+
+func TestPersistRefusesAnUnmanagedUplink(t *testing.T) {
+	a, backend := newTestApp(t)
+	drain(t, a, press(a, "w"))
+	selectGateway(t, a, "wlan0") // NetworkManager owns it
+	drain(t, a, press(a, "P"))
+	if a.mode == modeConfirm {
+		t.Errorf("P opened a dialog for an unmanaged uplink")
+	}
+	if len(backend.Ran()) != 0 {
+		t.Errorf("persisting an unmanaged uplink ran a command")
+	}
+	if !strings.Contains(a.status, "not managed") {
+		t.Errorf("status = %q, want the unmanaged reason", a.status)
+	}
 }
 
 func TestBusyStateSwallowsInput(t *testing.T) {

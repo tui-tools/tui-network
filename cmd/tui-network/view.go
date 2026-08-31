@@ -47,6 +47,8 @@ func (a *app) View() string {
 		return a.detailView()
 	case modeDHCP:
 		return a.dhcpView()
+	case modeGateways:
+		return a.gatewaysView()
 	}
 	return a.linksView()
 }
@@ -431,6 +433,7 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 		ui.KeyHint{Key: "e", Desc: "edit file"},
 		ui.KeyHint{Key: "s", Desc: "dns"},
 		ui.KeyHint{Key: "D", Desc: "dhcp"},
+		ui.KeyHint{Key: "w", Desc: "gateways"},
 		ui.KeyHint{Key: "r", Desc: "reload"},
 		ui.KeyHint{Key: "/", Desc: "filter"},
 		ui.KeyHint{Key: "?", Desc: "help"},
@@ -473,6 +476,9 @@ func helpKeys() []ui.KeyHint {
 		{Key: "D", Desc: "the router's DHCP screen: pools, reservations and leases"},
 		{Key: "a / x", Desc: "on the DHCP screen: add / remove a reservation"},
 		{Key: "p", Desc: "on the DHCP screen: adjust a pool's range"},
+		{Key: "w", Desc: "the Gateways screen: the machine's uplinks and the default route"},
+		{Key: "s / x", Desc: "on the Gateways screen: set the default / fail over to a standby"},
+		{Key: "P", Desc: "on the Gateways screen: make an uplink's priority persistent"},
 		{Key: "R", Desc: "re-read the network"},
 		{Key: "?", Desc: "this help"},
 		{Key: "q", Desc: "quit"},

@@ -125,9 +125,10 @@ func FuzzParseStatusJSON(f *testing.F) {
 }
 
 // FuzzParseRoutesJSON matters because the routes are read straight out of
-// `ip -j route`: whatever family a route claims is what the UI files it under.
+// `ip -j route`: whatever family a route claims is what the UI files it under,
+// and a multipath default's legs are the uplinks the failover then acts on.
 func FuzzParseRoutesJSON(f *testing.F) {
-	seed(f, "ip-route.json")
+	seed(f, "ip-route.json", "ip-route-gateways.json", "ip-route-multipath.json")
 	f.Fuzz(func(t *testing.T, out string) {
 		routes, err := ParseRoutesJSON(out)
 		if err != nil {
@@ -140,11 +141,49 @@ func FuzzParseRoutesJSON(f *testing.F) {
 			if r.Family != "" && r.Family != "ipv4" && r.Family != "ipv6" {
 				t.Fatalf("route family is not a family: %q", r.Family)
 			}
-			// A family is claimed only when an address in the route says so.
+			// A family is claimed only when an address in the route says so —
+			// the destination, the top-level gateway, or a multipath leg.
 			if r.Family != "" {
-				if !hasFamily(r.Destination, r.Family) && !hasFamily(r.Gateway, r.Family) {
+				legHasFamily := false
+				for _, nh := range r.NextHops {
+					if hasFamily(nh.Gateway, r.Family) {
+						legHasFamily = true
+					}
+				}
+				if !hasFamily(r.Destination, r.Family) &&
+					!hasFamily(r.Gateway, r.Family) && !legHasFamily {
 					t.Fatalf("route claims %q with no address of that family: %+v", r.Family, r)
 				}
+			}
+			// A multipath leg the Gateways view will turn into an argv must be
+			// a bare gateway and a bare link, never whitespace that a shell
+			// could split.
+			for _, nh := range r.NextHops {
+				if strings.ContainsAny(nh.Gateway, " \t\n") ||
+					strings.ContainsAny(nh.Link, " \t\n") {
+					t.Fatalf("multipath leg carries whitespace: %+v", nh)
+				}
+			}
+		}
+	})
+}
+
+// FuzzParseRouteGet covers the reachability probe: `ip -j route get` output
+// becomes the egress the Gateways screen shows and colours a row on, so a
+// resolved device must be a bare word.
+func FuzzParseRouteGet(f *testing.F) {
+	seed(f, "ip-route-get.json", "ip-route-get-onlink.json")
+	f.Fuzz(func(t *testing.T, out string) {
+		egress, err := ParseRouteGet(out)
+		if err != nil {
+			if egress.Found() {
+				t.Fatalf("failed and still returned an egress: %+v", egress)
+			}
+			return
+		}
+		for _, value := range []string{egress.Dev, egress.Gateway, egress.Source} {
+			if strings.ContainsAny(value, " \t\n") {
+				t.Fatalf("egress field is not a bare word: %q", value)
 			}
 		}
 	})

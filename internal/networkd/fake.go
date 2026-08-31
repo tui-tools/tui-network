@@ -3,6 +3,7 @@ package networkd
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tui-tools/tui-kit/runner"
@@ -111,12 +112,16 @@ func (f *Fake) reset() {
 			},
 		},
 		Routes: []network.Route{
+			// Two uplinks: the wired link is the active default at a low
+			// metric, the wireless one a standby at a higher metric — so the
+			// Gateways screen, the switch and the manual failover all work on
+			// the sample machine with nothing special installed.
 			{Destination: "default", Gateway: "192.0.2.1", Link: "enp1s0",
-				Protocol: "dhcp", Source: "192.0.2.24", Metric: 1024, Family: "ipv4"},
+				Protocol: "dhcp", Source: "192.0.2.24", Metric: 100, Family: "ipv4"},
 			{Destination: "default", Gateway: "198.51.100.1", Link: "wlan0",
-				Protocol: "static", Source: "198.51.100.42", Metric: 600, Family: "ipv4"},
+				Protocol: "static", Source: "198.51.100.42", Metric: 200, Family: "ipv4"},
 			{Destination: "192.0.2.0/24", Link: "enp1s0", Protocol: "kernel",
-				Scope: "link", Source: "192.0.2.24", Metric: 1024, Family: "ipv4"},
+				Scope: "link", Source: "192.0.2.24", Metric: 100, Family: "ipv4"},
 			{Destination: "198.51.100.0/24", Link: "wlan0", Protocol: "kernel",
 				Scope: "link", Source: "198.51.100.42", Family: "ipv4"},
 			{Destination: "fe80::/64", Link: "enp1s0", Protocol: "kernel",
@@ -210,10 +215,111 @@ func (f *Fake) apply(cmd network.Command) (string, error) {
 		return f.setLinkList(argv[2], argv[3:], func(l *network.Link, v []string) {
 			l.SearchDomains = v
 		})
-	case "install -m":
+	case "install -m", "install -D":
 		return f.installFile(argv)
+	case "ip route", "ip -6":
+		return f.replaceDefault(argv)
 	}
 	return "ok", nil
+}
+
+// replaceDefault applies an `ip route replace default via <gw> dev <if> metric
+// <n>` to the sample machine, so the demo's active default really moves when
+// the operator switches or fails over. It re-points the matching default route
+// (or adds one), and lowers no other route, which is exactly what the kernel
+// does with the command's metric.
+func (f *Fake) replaceDefault(argv []string) (string, error) {
+	fields := map[string]string{}
+	for i := 0; i+1 < len(argv); i++ {
+		switch argv[i] {
+		case "via", "dev", "metric":
+			fields[argv[i]] = argv[i+1]
+		}
+	}
+	dev, gateway := fields["dev"], fields["via"]
+	metric := 0
+	if m, err := strconv.Atoi(fields["metric"]); err == nil {
+		metric = m
+	}
+	if dev == "" {
+		return "", nil
+	}
+	for i := range f.model.Routes {
+		route := &f.model.Routes[i]
+		if route.Destination == "default" && route.Link == dev {
+			route.Metric = metric
+			if gateway != "" {
+				route.Gateway = gateway
+			}
+			return "", nil
+		}
+	}
+	f.model.Routes = append(f.model.Routes, network.Route{
+		Destination: "default", Gateway: gateway, Link: dev,
+		Metric: metric, Family: "ipv4", Protocol: "static",
+	})
+	return "", nil
+}
+
+// Egress answers the reachability probe from the sample machine: a gateway is
+// reachable over the interface its default route leaves by.
+func (f *Fake) Egress(_ context.Context, gw network.Gateway) (network.Egress, error) {
+	if link, ok := f.model.Link(gw.Interface); ok {
+		return network.Egress{Dev: gw.Interface, Source: link.PrimaryAddress()}, nil
+	}
+	return network.Egress{}, nil
+}
+
+// BuildSetDefaultGateway builds the live default-route switch.
+func (f *Fake) BuildSetDefaultGateway(gw network.Gateway, metric int) (network.Command, error) {
+	return BuildSetDefaultGateway(gw, metric)
+}
+
+// BuildPersistGateway stages the drop-in in memory and returns the same plan
+// the real backend returns — the same diff, and the same install-and-reload
+// commands. --demo writes nothing, so the staging path is a name.
+func (f *Fake) BuildPersistGateway(gw network.Gateway, metric int) (network.WritePlan, error) {
+	if !gw.Managed {
+		return network.WritePlan{}, fmt.Errorf(
+			"networkd: %s is not managed by systemd-networkd, "+
+				"so its gateway cannot be made persistent here", gw.Interface)
+	}
+	if gw.ConfigFile == "" {
+		return network.WritePlan{}, fmt.Errorf(
+			"networkd: %s has no .network file to attach a gateway drop-in to; "+
+				"write one first with the link editor", gw.Interface)
+	}
+	dest := dropinPath(gw.ConfigFile)
+	before := ""
+	for _, file := range f.model.ConfigFiles {
+		if file.Path == dest {
+			before = file.Raw
+		}
+	}
+	content, err := RenderGatewayDropin(gw, metric)
+	if err != nil {
+		return network.WritePlan{}, err
+	}
+	if before == content {
+		return network.WritePlan{}, fmt.Errorf("%s already says exactly this", dest)
+	}
+	temp := "/tmp/tui-network/" + baseName(dest)
+	f.staged[dest] = content
+	installCmd, err := BuildInstallDropin(temp, dest)
+	if err != nil {
+		return network.WritePlan{}, err
+	}
+	reloadCmd, err := BuildReload()
+	if err != nil {
+		return network.WritePlan{}, err
+	}
+	return network.WritePlan{
+		Path:     dest,
+		Content:  content,
+		Diff:     Diff(dest, before, content),
+		TempPath: temp,
+		Commands: []network.Command{installCmd, reloadCmd},
+	}, nil
 }
 
 // setOperational moves a link to a new state, refusing an unmanaged one the
@@ -255,7 +361,9 @@ func (f *Fake) installFile(argv []string) (string, error) {
 	if len(argv) < 5 {
 		return "", fmt.Errorf("install: not enough arguments")
 	}
-	destination := argv[4]
+	// The destination is the last argument whichever install form ran: `install
+	// -m 644 temp dest` or the drop-in's `install -D -m 644 temp dest`.
+	destination := argv[len(argv)-1]
 	content, ok := f.staged[destination]
 	if !ok {
 		return "", fmt.Errorf("install: nothing staged for %s", destination)

@@ -48,10 +48,49 @@ type checkReport struct {
 	Compat compat.Result `json:"compat"`
 	// Model is the parsed state in full.
 	Model network.Model `json:"model"`
+	// Gateways is the router's uplink view derived from the routing table:
+	// the default routes, which one is the active default, and whether the
+	// machine has more than one uplink to fail over between.
+	Gateways gatewaysReport `json:"gateways"`
 	// Dhcp is the router's DHCP server, read the same read-only way: which
 	// server is present and active, and how many pools, reservations and leases
 	// it has. It is its own block because it is its own backend.
 	Dhcp dhcpReport `json:"dhcp"`
+}
+
+// gatewaysReport is the gateway half of --check: the counts a smoke test
+// asserts on without walking the model, plus the derived list in full with its
+// active flags.
+type gatewaysReport struct {
+	// Count is how many candidate uplinks (default-route gateways) were found.
+	Count int `json:"count"`
+	// Active is how many of them are the current default (the lowest-metric
+	// route of their family, or every leg of a multipath default).
+	Active int `json:"active"`
+	// MultipleUplinks reports that more than one uplink exists, which is the
+	// precondition for a failover.
+	MultipleUplinks bool `json:"multipleUplinks"`
+	// List is the derived gateways in full, in display order.
+	List []network.Gateway `json:"list"`
+}
+
+// gatewaysCheck derives the uplink view from the parsed model. It reads
+// nothing extra: the routing table Load already gathered is all the gateways
+// are made of, so the reachability probe (an ip route get per gateway) is left
+// to the interactive screen and never run under --check.
+func gatewaysCheck(model network.Model) gatewaysReport {
+	list := network.Gateways(model)
+	report := gatewaysReport{
+		Count:           len(list),
+		MultipleUplinks: len(list) > 1,
+		List:            list,
+	}
+	for _, gw := range list {
+		if gw.Active {
+			report.Active++
+		}
+	}
+	return report
 }
 
 // dhcpReport is the DHCP half of --check: the counts a smoke test asserts on
@@ -106,6 +145,7 @@ func runCheck(backend network.Backend, backendCompat compat.Result,
 		ConfigFiles:     len(model.ConfigFiles),
 		Compat:          backendCompat,
 		Model:           model,
+		Gateways:        gatewaysCheck(model),
 		Dhcp:            dhcpCheck(ctx, dhcpBackend, dhcpCompat),
 	}
 	for _, link := range model.Links {

@@ -408,3 +408,73 @@ func hasAddress(link network.Link, address string) bool {
 	}
 	return false
 }
+
+func TestParseRoutesJSONGatewaysFixture(t *testing.T) {
+	routes, err := ParseRoutesJSON(read(t, "ip-route-gateways.json"))
+	if err != nil {
+		t.Fatalf("ParseRoutesJSON: %v", err)
+	}
+	// The captured dual-uplink machine has two default routes at different
+	// metrics — the shape the Gateways screen is built for.
+	var defaults int
+	for _, r := range routes {
+		if r.Destination == "default" && r.Gateway != "" {
+			defaults++
+		}
+	}
+	if defaults != 2 {
+		t.Fatalf("got %d default routes with a gateway, want 2", defaults)
+	}
+	first := routes[0]
+	if first.Gateway != "192.0.2.1" || first.Link != "wan0" || first.Metric != 100 {
+		t.Errorf("first default = %+v", first)
+	}
+}
+
+func TestParseRoutesJSONMultipath(t *testing.T) {
+	routes, err := ParseRoutesJSON(read(t, "ip-route-multipath.json"))
+	if err != nil {
+		t.Fatalf("ParseRoutesJSON: %v", err)
+	}
+	// A multipath default is one route object with several legs, not several
+	// routes — the count stays aligned with what `ip -j route` prints.
+	def := routes[0]
+	if def.Destination != "default" || len(def.NextHops) != 2 {
+		t.Fatalf("default route = %+v, want two next hops", def)
+	}
+	if def.NextHops[0].Gateway != "192.0.2.1" || def.NextHops[0].Link != "wan0" {
+		t.Errorf("first leg = %+v", def.NextHops[0])
+	}
+	// The family is settled by a leg's gateway when the destination is "default".
+	if def.Family != "ipv4" {
+		t.Errorf("multipath family = %q, want ipv4", def.Family)
+	}
+}
+
+func TestParseRouteGet(t *testing.T) {
+	egress, err := ParseRouteGet(read(t, "ip-route-get.json"))
+	if err != nil {
+		t.Fatalf("ParseRouteGet: %v", err)
+	}
+	if egress.Dev != "wan0" || egress.Gateway != "192.0.2.1" || egress.Source != "192.0.2.20" {
+		t.Errorf("egress = %+v", egress)
+	}
+	if !egress.Found() {
+		t.Errorf("a resolved egress must report Found")
+	}
+
+	// An on-link destination resolves a device but no gateway.
+	onlink, err := ParseRouteGet(read(t, "ip-route-get-onlink.json"))
+	if err != nil {
+		t.Fatalf("ParseRouteGet on-link: %v", err)
+	}
+	if onlink.Dev != "wan0" || onlink.Gateway != "" {
+		t.Errorf("on-link egress = %+v, want a dev and no gateway", onlink)
+	}
+
+	// An empty answer is not an error: the kernel simply had no route.
+	empty, err := ParseRouteGet("[]")
+	if err != nil || empty.Found() {
+		t.Errorf("empty route get = %+v, %v", empty, err)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/tui-tools/tui-kit/report"
 	"github.com/tui-tools/tui-kit/theme"
 	"github.com/tui-tools/tui-network/internal/dhcp"
+	"github.com/tui-tools/tui-network/internal/network"
 )
 
 // The two manifest features the systemd version gates. Between them they
@@ -90,6 +91,15 @@ func runReport(cfg config.Config, opts options, dhcpBackend dhcp.Backend,
 		Key: "dhcp backend", Value: dhcpBackendLine(opts.demo, dhcpBackend.Name(), dhcpCompat),
 	})
 
+	// The uplink view is a router fact worth a line, but it is derived from the
+	// routing table, and --report reads nothing on a live machine — that is the
+	// whole point of it working when networkctl is missing. So the live line
+	// points at where the count is read (the screen and --check), and only the
+	// demo, whose backend is in-memory, states the sample's uplink count.
+	info.Extra = append(info.Extra, report.Field{
+		Key: "gateways", Value: gatewaysLine(cfg, opts, backendCompat),
+	})
+
 	if selectError != "" {
 		info.Extra = append(info.Extra, report.Field{
 			Key: "backend error", Value: selectError,
@@ -98,6 +108,30 @@ func runReport(cfg config.Config, opts options, dhcpBackend dhcp.Backend,
 
 	_, err := io.WriteString(out, report.Render(info))
 	return err
+}
+
+// gatewaysLine describes the router's uplink management. On a live machine it
+// reads nothing — it names where the count is read instead — and under --demo,
+// whose backend answers from memory, it states how many uplinks the sample has
+// and whether that is enough to fail over.
+func gatewaysLine(cfg config.Config, opts options, backendCompat compat.Result) string {
+	if !opts.demo {
+		return "managed live via `ip route`, persistent via a networkd drop-in; " +
+			"the Gateways screen enumerates uplinks and --check reports the count"
+	}
+	backend, err := pickBackend(cfg, opts, backendCompat)
+	if err != nil {
+		return "sample machine"
+	}
+	model, err := backend.Load(context.Background())
+	if err != nil {
+		return "sample machine"
+	}
+	gws := network.Gateways(model)
+	if len(gws) > 1 {
+		return fmt.Sprintf("%d uplinks in the sample, failover available", len(gws))
+	}
+	return fmt.Sprintf("%d uplink in the sample", len(gws))
 }
 
 // dhcpBackendLine names the DHCP/DNS server behind the router screen and the

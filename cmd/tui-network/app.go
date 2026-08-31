@@ -29,6 +29,7 @@ const (
 	modeForm
 	modeHelp
 	modeDHCP
+	modeGateways
 )
 
 // inputTarget says what a text prompt's answer applies to.
@@ -64,6 +65,18 @@ type app struct {
 	// fromDHCP records that an open dialog was opened from the DHCP screen, so
 	// closing it returns there rather than to the links list.
 	fromDHCP bool
+
+	// gateways is the router's uplink view, derived from the routing table and
+	// enriched with an optional reachability probe. gatewaysLoaded reports that
+	// the derivation has run at least once; the cursor and offset drive the
+	// selectable list.
+	gateways       []network.Gateway
+	gatewaysLoaded bool
+	gatewayCursor  int
+	gatewayOffset  int
+	// fromGateways records that an open dialog was opened from the Gateways
+	// screen, so closing it returns there.
+	fromGateways bool
 
 	model network.Model
 	// visible holds the links left after the filter, in display order.
@@ -116,6 +129,12 @@ type detailMsg struct {
 type dhcpLoadedMsg struct {
 	model dhcp.Model
 	err   error
+}
+
+// gatewaysMsg carries the uplink view after the reachability probe has filled
+// in each gateway's egress.
+type gatewaysMsg struct {
+	gateways []network.Gateway
 }
 
 // ranMsg carries the result of running a plan.
@@ -190,6 +209,28 @@ func (a *app) loadDHCP() tea.Cmd {
 		defer cancel()
 		model, err := backend.Load(ctx)
 		return dhcpLoadedMsg{model: model, err: err}
+	}
+}
+
+// loadGateways derives the uplink view from the model already loaded and then,
+// in the background, resolves each gateway's egress with a read-only `ip route
+// get`. The derivation is instant and pure; only the reachability probe touches
+// the machine, and it only reads, so it needs no confirm.
+func (a *app) loadGateways() tea.Cmd {
+	backend := a.backend
+	gws := network.Gateways(a.model)
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		for i := range gws {
+			if gws[i].Address == "" {
+				continue
+			}
+			if egress, err := backend.Egress(ctx, gws[i]); err == nil {
+				gws[i].Egress = egress
+			}
+		}
+		return gatewaysMsg{gateways: gws}
 	}
 }
 
@@ -280,6 +321,12 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.mode == modeDetail && a.detail.Name != "" {
 			return a, a.loadDetail(a.detail.Name)
 		}
+		// The Gateways screen is derived from the routing table the reload just
+		// refreshed, so re-derive it (and re-probe reachability).
+		if a.mode == modeGateways {
+			a.gateways = network.Gateways(a.model)
+			return a, a.loadGateways()
+		}
 		return a, nil
 
 	case detailMsg:
@@ -302,6 +349,12 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.dhcpModel = msg.model
+		return a, nil
+
+	case gatewaysMsg:
+		a.gateways = msg.gateways
+		a.gatewaysLoaded = true
+		a.clampGatewayCursor()
 		return a, nil
 
 	case ranMsg:
@@ -382,6 +435,8 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case modeDHCP:
 		return a.handleDHCPKey(msg)
+	case modeGateways:
+		return a.handleGatewaysKey(msg)
 	case modeDetail:
 		return a.handleDetailKey(msg)
 	default:
@@ -413,6 +468,9 @@ func (a *app) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a *app) returnMode() mode {
 	if a.fromDHCP {
 		return modeDHCP
+	}
+	if a.fromGateways {
+		return modeGateways
 	}
 	if a.detail.Name != "" {
 		return modeDetail
@@ -586,6 +644,8 @@ func (a *app) handleLinksKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.openDetail()
 	case "D":
 		return a, a.openDHCP()
+	case "w":
+		return a, a.openGateways()
 	case "R", "ctrl+r":
 		a.loading = true
 		return a, a.load()
@@ -817,6 +877,183 @@ func (a *app) confirmDHCPWrite(title string,
 		Payload: plan{title: title, commands: write.Commands, viaDHCP: true},
 	}
 	return nil
+}
+
+// openGateways switches to the router's Gateways screen: the uplinks the
+// machine has, which one is the default now, and the switch and failover keys.
+func (a *app) openGateways() tea.Cmd {
+	a.mode = modeGateways
+	a.gatewayOffset, a.gatewayCursor = 0, 0
+	a.fromGateways = true
+	a.gateways = network.Gateways(a.model)
+	a.gatewaysLoaded = true
+	a.clampGatewayCursor()
+	return a.loadGateways()
+}
+
+// handleGatewaysKey handles the Gateways screen: move the selection, re-read
+// it, switch the default to the selected uplink, fail over to a standby, or
+// make a uplink's priority persistent.
+func (a *app) handleGatewaysKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "esc", "backspace", "left", "w":
+		a.mode, a.gatewayOffset, a.fromGateways = modeLinks, 0, false
+		return a, nil
+	case "?":
+		a.mode = modeHelp
+		return a, nil
+	case "j", "down":
+		a.moveGatewayCursor(1)
+		return a, nil
+	case "k", "up":
+		a.moveGatewayCursor(-1)
+		return a, nil
+	case "g", "home":
+		a.gatewayCursor, a.gatewayOffset = 0, 0
+		return a, nil
+	case "G", "end":
+		a.gatewayCursor = max(len(a.gateways)-1, 0)
+		a.clampGatewayCursor()
+		return a, nil
+	case "pgdown", "ctrl+f":
+		a.moveGatewayCursor(a.detailHeight())
+		return a, nil
+	case "pgup", "ctrl+b":
+		a.moveGatewayCursor(-a.detailHeight())
+		return a, nil
+	case "R", "ctrl+r":
+		a.loading = true
+		return a, a.load()
+	case "s":
+		return a, a.setDefaultGateway()
+	case "x":
+		return a, a.failoverGateway()
+	case "P":
+		return a, a.persistGateway()
+	}
+	return a, nil
+}
+
+// currentGateway is the highlighted uplink.
+func (a *app) currentGateway() (network.Gateway, bool) {
+	if a.gatewayCursor < 0 || a.gatewayCursor >= len(a.gateways) {
+		return network.Gateway{}, false
+	}
+	return a.gateways[a.gatewayCursor], true
+}
+
+// setDefaultGateway previews making the selected uplink the default route, at a
+// metric that wins the kernel's lowest-metric race.
+func (a *app) setDefaultGateway() tea.Cmd {
+	gw, ok := a.currentGateway()
+	if !ok {
+		a.setStatus(ui.StatusWarn, "no gateway selected")
+		return nil
+	}
+	if gw.Active {
+		a.setStatusf(ui.StatusInfo, "%s via %s is already the default",
+			gw.Interface, gw.Address)
+		return nil
+	}
+	metric := network.PromoteMetric(a.gateways, gw)
+	return a.confirmSetGateway(
+		fmt.Sprintf("Set the default route to %s", gw.Interface), gw, metric)
+}
+
+// failoverGateway promotes the top standby uplink to default — the manual
+// failover, for when the active uplink is down and the operator wants off it.
+func (a *app) failoverGateway() tea.Cmd {
+	standby, ok := network.Standby(a.gateways)
+	if !ok {
+		a.setStatus(ui.StatusWarn, "no standby uplink to fail over to")
+		return nil
+	}
+	metric := network.PromoteMetric(a.gateways, standby)
+	return a.confirmSetGateway(
+		fmt.Sprintf("Fail over to %s", standby.Interface), standby, metric)
+}
+
+// confirmSetGateway builds the live default-route command and opens the confirm
+// dialog, warning that the switch can drop the session it runs over.
+func (a *app) confirmSetGateway(title string, gw network.Gateway, metric int) tea.Cmd {
+	cmd, err := a.backend.BuildSetDefaultGateway(gw, metric)
+	if err != nil {
+		a.setStatus(ui.StatusError, err.Error())
+		return nil
+	}
+	body := cmd.Description + ".\n" +
+		"This is a live change: it re-points the default route now. " +
+		"If you are connected over the current uplink, you may lose the session."
+	if gw.Managed {
+		body += "\nIt is not persistent — press P to also write a drop-in that " +
+			"survives a reconfigure."
+	} else {
+		body += "\nThis uplink is not managed by systemd-networkd, so only the " +
+			"live change is offered."
+	}
+	a.mode = modeConfirm
+	a.confirm = ui.Confirm{
+		Title:   title,
+		Body:    body,
+		Command: a.backend.Preview(cmd),
+		Danger:  true,
+		Payload: plan{title: title, commands: []network.Command{cmd}},
+	}
+	return nil
+}
+
+// persistGateway previews the networkd drop-in that makes the selected uplink's
+// priority durable. It is offered only for a managed link with a .network file.
+func (a *app) persistGateway() tea.Cmd {
+	gw, ok := a.currentGateway()
+	if !ok {
+		a.setStatus(ui.StatusWarn, "no gateway selected")
+		return nil
+	}
+	metric := gw.Metric
+	if metric == 0 {
+		metric = network.PromoteMetric(a.gateways, gw)
+	}
+	write, err := a.backend.BuildPersistGateway(gw, metric)
+	if err != nil {
+		a.setStatus(ui.StatusWarn, err.Error())
+		return nil
+	}
+	title := "Persist the gateway of " + gw.Interface
+	a.mode = modeConfirm
+	a.confirm = ui.Confirm{
+		Title: title,
+		Body: a.diffForDialog(write.Diff) +
+			"\nThis survives a reconfigure; it applies on the next " +
+			"`networkctl reconfigure " + gw.Interface + "` or reboot.",
+		Command: a.previewAll(write.Commands, false),
+		Danger:  true,
+		Payload: plan{title: title, commands: write.Commands},
+	}
+	return nil
+}
+
+// moveGatewayCursor moves the selection on the Gateways screen.
+func (a *app) moveGatewayCursor(delta int) {
+	a.gatewayCursor += delta
+	a.clampGatewayCursor()
+}
+
+// clampGatewayCursor keeps the gateway cursor and scroll offset in range.
+func (a *app) clampGatewayCursor() {
+	if len(a.gateways) == 0 {
+		a.gatewayCursor, a.gatewayOffset = 0, 0
+		return
+	}
+	a.gatewayCursor = min(max(a.gatewayCursor, 0), len(a.gateways)-1)
+	height := a.gatewayHeight()
+	if a.gatewayCursor < a.gatewayOffset {
+		a.gatewayOffset = a.gatewayCursor
+	}
+	if a.gatewayCursor >= a.gatewayOffset+height {
+		a.gatewayOffset = a.gatewayCursor - height + 1
+	}
+	a.gatewayOffset = max(min(a.gatewayOffset, max(len(a.gateways)-height, 0)), 0)
 }
 
 // handleDetailKey handles the per-link screen. The action keys are the same

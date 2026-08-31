@@ -3,7 +3,7 @@
   "name": "tui-network",
   "binary": "tui-network",
   "tagline": "Links, addresses, routes and DNS, with every change previewed before it runs",
-  "description": "A terminal UI for the machine's network. It shows the links you actually have — state, type, addresses, gateway, MAC, MTU and driver — with the routing table, what systemd-resolved is using for DNS, and the `.network` file behind each link.\n\nOpen a link and you get the whole picture in one screen: its addresses and where each came from, its routes, its DNS servers and search domains, its DHCP lease, the `.network` file that configures it, and what systemd-networkd has been saying about it in the journal.\n\nChanges are previewed. Bringing a link up or down, reconfiguring it, renewing a lease, setting DNS at runtime, and editing a `.network` file — which shows a unified diff and then installs the file and reloads networkd — all go through a confirm dialog carrying the exact command line. A link systemd-networkd does not manage, because NetworkManager owns it, is shown read-only with the reason.\n\nThe `D` screen reads the router's dnsmasq or Kea server: pools, reservations, leases, and previewed reservation and pool-range edits on dnsmasq.\n\nRun `tui-network --demo` to drive a sample machine: every key works, every command is built and previewed for real, and nothing touches your system.",
+  "description": "A terminal UI for the machine's network. It shows the links you actually have — state, type, addresses, gateway, MAC, MTU and driver — with the routing table, what systemd-resolved is using for DNS, and the `.network` file behind each link.\n\nOpen a link and you get the whole picture in one screen: its addresses and where each came from, its routes, its DNS servers and search domains, its DHCP lease, the `.network` file that configures it, and what systemd-networkd has been saying about it in the journal.\n\nChanges are previewed. Bringing a link up or down, reconfiguring it, renewing a lease, setting DNS at runtime, and editing a `.network` file — which shows a unified diff and then installs the file and reloads networkd — all go through a confirm dialog carrying the exact command line. A link systemd-networkd does not manage, because NetworkManager owns it, is shown read-only with the reason.\n\nThe `D` screen reads the router's dnsmasq or Kea server (pools, leases, reservations), and `w` switches the default route or fails over.\n\nRun `tui-network --demo` to drive a sample machine: every key works, every command is built and previewed for real, and nothing touches your system.",
   "category": "network",
   "homepage": "https://github.com/tui-tools/tui-network",
   "repo": "https://github.com/tui-tools/tui-network",
@@ -78,6 +78,18 @@
       "action": "On the DHCP screen: adjust a pool's range (dnsmasq)"
     },
     {
+      "key": "w",
+      "action": "Open the Gateways screen: the machine's uplinks and the default route"
+    },
+    {
+      "key": "s / x",
+      "action": "On the Gateways screen: set the default route or fail over to a standby uplink"
+    },
+    {
+      "key": "P",
+      "action": "On the Gateways screen: make an uplink's priority persistent (networkd drop-in)"
+    },
+    {
       "key": "f",
       "action": "Flush the resolver cache"
     },
@@ -138,6 +150,10 @@
         {
           "range": ">=245",
           "impact": "no released systemd emits JSON from `resolvectl status`, so DNS servers and search domains are read from the text output of `resolvectl dns` and `resolvectl domain`"
+        },
+        {
+          "range": ">=245",
+          "impact": "the Gateways screen (w) reads the default routes from `ip -j route` (multipath expanded per next hop) and reachability from `ip -j route get`; the default-route switch and failover run `ip route replace` live, and a managed link also gets a persistent `[Route]` drop-in reloaded with `networkctl`"
         }
       ],
       "tested": [

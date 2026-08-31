@@ -2,7 +2,10 @@ package networkd
 
 import (
 	"fmt"
+	"net/netip"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/tui-tools/tui-network/internal/network"
@@ -340,6 +343,130 @@ func normalizeDHCP(value string) string {
 // shared textdiff walk, so a .network edit and a dnsmasq edit read the same.
 func Diff(path, before, after string) string {
 	return textdiff.Unified(path, before, after)
+}
+
+// maxMetric bounds the route metric a gateway command may carry: the kernel's
+// route priority is a 32-bit unsigned field, so anything past this is not a
+// metric the operator meant to type.
+const maxMetric = 0xFFFFFFFF
+
+// dropinFile is the fixed name of the drop-in tui-network writes for a gateway's
+// persistent priority. Keeping it a single owned name means a second write
+// replaces the first rather than piling drop-ins up.
+const dropinFile = "50-tui-gateway.conf"
+
+// checkGatewayAddr rejects anything that is not a bare IP address. The gateway
+// reaches an argv run as root, so it is validated with the same parser the
+// kernel would use, before a command exists at all.
+func checkGatewayAddr(address string) error {
+	if _, err := netip.ParseAddr(address); err != nil {
+		return fmt.Errorf("networkd: %q is not a gateway address", address)
+	}
+	return nil
+}
+
+// checkMetric rejects a metric outside the kernel's route-priority range.
+func checkMetric(metric int) error {
+	if metric < 0 || metric > maxMetric {
+		return fmt.Errorf("networkd: %d is not a route metric", metric)
+	}
+	return nil
+}
+
+// BuildSetDefaultGateway builds the live command that makes gw the default
+// route at the given metric. It is the runtime switch and the manual failover:
+// a lower metric than the current default wins the kernel's lowest-metric race,
+// so replacing the chosen gateway's default route at a low metric promotes it.
+//
+// `ip route replace` is used rather than `add`/`del` because it is idempotent —
+// it installs the route whether or not one is already there — so the one
+// previewed command is the whole change. It is destructive: it re-points the
+// default route, which can drop the session it runs over.
+func BuildSetDefaultGateway(gw network.Gateway, metric int) (network.Command, error) {
+	if err := checkLink(gw.Interface); err != nil {
+		return network.Command{}, err
+	}
+	if err := checkGatewayAddr(gw.Address); err != nil {
+		return network.Command{}, err
+	}
+	if err := checkMetric(metric); err != nil {
+		return network.Command{}, err
+	}
+	argv := []string{"ip"}
+	if gw.Family == "ipv6" {
+		// The v6 default route lives in the v6 table; `ip` needs telling.
+		argv = append(argv, "-6")
+	}
+	argv = append(argv, "route", "replace", "default",
+		"via", gw.Address, "dev", gw.Interface, "metric", strconv.Itoa(metric))
+	return network.Command{
+		Argv: argv,
+		Description: fmt.Sprintf(
+			"Make %s the default route via %s (metric %d)",
+			gw.Interface, gw.Address, metric),
+		Destructive: true,
+	}, nil
+}
+
+// dropinPath is where a gateway drop-in for a given .network file lands:
+// <ConfigDir>/<base>.d/50-tui-gateway.conf, which is where systemd-networkd
+// reads drop-ins for that file from, whatever directory the file itself lives
+// in.
+func dropinPath(networkFile string) string {
+	return filepath.Join(ConfigDir, filepath.Base(networkFile)+".d", dropinFile)
+}
+
+// checkDropinPath refuses to write a drop-in anywhere but under the networkd
+// configuration directory, and refuses one whose parent is not the drop-in
+// directory of a .network file.
+func checkDropinPath(path string) error {
+	if !strings.HasPrefix(path, ConfigDir+"/") {
+		return fmt.Errorf("networkd: refusing to write outside %s", ConfigDir)
+	}
+	if filepath.Base(path) != dropinFile {
+		return fmt.Errorf("networkd: a gateway drop-in must be named %s", dropinFile)
+	}
+	parent := filepath.Base(filepath.Dir(path))
+	if !strings.HasSuffix(parent, ".network.d") {
+		return fmt.Errorf("networkd: a gateway drop-in belongs in a .network.d directory")
+	}
+	return nil
+}
+
+// RenderGatewayDropin is the text of the drop-in that sets a gateway's
+// persistent default-route priority: a [Route] section networkd merges into the
+// interface's configuration on reload.
+func RenderGatewayDropin(gw network.Gateway, metric int) (string, error) {
+	if err := checkGatewayAddr(gw.Address); err != nil {
+		return "", err
+	}
+	if err := checkMetric(metric); err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Written by tui-network: persistent default-route "+
+		"priority for %s.\n", gw.Interface)
+	b.WriteString("# systemd-networkd re-reads it on `networkctl reload`.\n\n")
+	b.WriteString("[Route]\n")
+	fmt.Fprintf(&b, "Gateway=%s\n", gw.Address)
+	fmt.Fprintf(&b, "Metric=%d\n", metric)
+	return b.String(), nil
+}
+
+// BuildInstallDropin copies a staged drop-in into place with `install -D`,
+// which creates the .network.d directory in the same call, so there is no
+// window where the file is on disk with the wrong permissions and no separate
+// mkdir to preview.
+func BuildInstallDropin(tempPath, destination string) (network.Command, error) {
+	if err := checkDropinPath(destination); err != nil {
+		return network.Command{}, err
+	}
+	return network.Command{
+		Argv: []string{"install", "-D", "-m", FileMode, tempPath, destination},
+		Description: fmt.Sprintf("Install %s as %s (persistent gateway priority)",
+			tempPath, destination),
+		Destructive: true,
+	}, nil
 }
 
 // splitLines splits a file into lines, dropping the empty element a trailing

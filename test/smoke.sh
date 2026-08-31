@@ -166,6 +166,32 @@ check "route count matches \`ip -j route\` ($routes)" \
   "$bin --check" \
   "\"routes\": $routes"
 
+# 4b. The gateway view agrees with the routing table: every default route that
+#     carries a gateway is a candidate uplink. This is the read half of item 7
+#     (gateways); switching the default and the failover are driven from the
+#     TUI in the router lab, not here.
+uplinks=$(ip -j route | python3 -c '
+import json, sys
+routes = json.load(sys.stdin)
+n = 0
+for r in routes:
+    if r.get("dst") != "default":
+        continue
+    if r.get("gateway"):
+        n += 1
+    for nh in r.get("nexthops", []):
+        if nh.get("gateway"):
+            n += 1
+print(n)
+' 2>/dev/null || echo skip)
+if [[ "$uplinks" == "skip" || -z "$uplinks" ]]; then
+  echo "SKIP  could not count uplinks (no python3?)"
+else
+  check "gateway count matches the default routes ($uplinks)" \
+    "$bin --check | python3 -c 'import json,sys;print(json.load(sys.stdin)[\"gateways\"][\"count\"])'" \
+    "^$uplinks\$"
+fi
+
 case "$manager" in
   networkd)
     # 5. networkd is running, so the tool must say so, and at least one link
