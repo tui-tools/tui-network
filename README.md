@@ -511,7 +511,7 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | --- | --- |
 | `>=2.80` | the DHCP screen reads the lease file (/var/lib/misc/dnsmasq.leases), the `dhcp-range` pools and `dhcp-host` reservations from the configuration, and dnsmasq serves DNS and DHCP from one process, so the resolver view on the links screen is only what systemd-resolved reports |
 | `>=2.80` | reservations tui-network adds are written to a drop-in of its own (/etc/dnsmasq.d/tui-network.conf) and applied with `systemctl reload dnsmasq`; a pool range change needs `systemctl restart dnsmasq`, which briefly interrupts DNS and DHCP |
-| `>=2.80` | the advertised DHCP options (DNS servers, gateway, domain) and the upstream `server=` forwarders are edited through a drop-in of the tool's own (/etc/dnsmasq.d/50-tui-network.conf), regenerated in full so hand-maintained lines are never touched; empty fields render no option, which leaves dnsmasq advertising its own address, and the change is applied with `systemctl restart dnsmasq` because dnsmasq does not re-read configuration files on SIGHUP |
+| `>=2.80` | Advertised DHCP options (DNS, gateway, domain) and upstream server= forwarders are edited through the tool's own drop-in (/etc/dnsmasq.d/50-tui-network.conf), regenerated whole; lines the tool does not own are never touched. Applying restarts dnsmasq. |
 
 ### kea
 
