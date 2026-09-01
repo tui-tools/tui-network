@@ -587,9 +587,13 @@ func (a *app) handleForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, a.form.updateActive(msg)
 }
 
-// submitForm renders the .network file, diffs it against what is on disk and
-// opens the confirm dialog with both the diff and the commands that apply it.
+// submitForm renders what the open form edits — the .network file, or the
+// DHCP options drop-in — diffs it against what is on disk and opens the
+// confirm dialog with both the diff and the commands that apply it.
 func (a *app) submitForm() tea.Cmd {
+	if a.form.kind == formDHCPOptions {
+		return a.submitOptionsForm()
+	}
 	write, err := a.backend.BuildWriteConfig(a.form.spec())
 	if err != nil {
 		a.setStatus(ui.StatusError, err.Error())
@@ -699,6 +703,8 @@ func (a *app) handleDHCPKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.promptRemoveReservation()
 	case "p":
 		return a, a.promptPoolRange()
+	case "o":
+		return a, a.promptDHCPOptions()
 	}
 	return a, nil
 }
@@ -772,6 +778,45 @@ func (a *app) promptPoolRange() tea.Cmd {
 	}
 	a.openDHCPInput(inputPoolRange, "Adjust a pool range", placeholder, help)
 	return nil
+}
+
+// promptDHCPOptions opens the guided editor for what DHCP advertises and where
+// dnsmasq resolves upstream. It seeds from the tool-owned drop-in alone: the
+// form regenerates that file in full, and a value the administrator set in
+// another file is shown in the summary but never rewritten.
+func (a *app) promptDHCPOptions() tea.Cmd {
+	if !a.requireDHCPMutation(a.dhcpCaps.SupportsSetOptions) {
+		return nil
+	}
+	a.form = newDHCPOptionsForm(a.dhcpModel.OwnOptions, a.dhcpCaps.OptionsFile)
+	a.fromDHCP = true
+	a.mode = modeForm
+	return nil
+}
+
+// submitOptionsForm turns the options form into the previewed drop-in write.
+// Validation lives in the backend's renderer, the same code path that writes
+// the file, so the form cannot approve a value the renderer would refuse.
+func (a *app) submitOptionsForm() tea.Cmd {
+	opts := dhcp.Options{
+		DNS:       splitList(a.form.get("adns")),
+		Gateway:   a.form.get("agw"),
+		Domain:    a.form.get("domain"),
+		Upstreams: splitList(a.form.get("upstream")),
+	}
+	return a.confirmDHCPWrite("Set DHCP and DNS options",
+		func() (dhcp.WritePlan, error) {
+			return a.dhcp.BuildSetOptions(opts)
+		})
+}
+
+// splitList splits a comma- or space-separated list, dropping empties, so the
+// form accepts both the dnsmasq comma form and the space form the DNS prompts
+// use elsewhere.
+func splitList(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t'
+	})
 }
 
 // submitAddReservation builds the previewed add from the prompt's fields.

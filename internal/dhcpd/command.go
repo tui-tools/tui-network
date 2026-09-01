@@ -64,13 +64,14 @@ func BuildReloadDnsmasq() dhcp.Command {
 	}
 }
 
-// BuildRestartDnsmasq restarts the service, which a pool range change needs:
-// dnsmasq does not re-read dhcp-range on a reload. The restart briefly stops
-// DNS and DHCP, so it is marked destructive.
+// BuildRestartDnsmasq restarts the service, which a pool range or options
+// change needs: dnsmasq does not re-read dhcp-range — or configuration files
+// at all — on a reload. The restart briefly stops DNS and DHCP, so it is
+// marked destructive.
 func BuildRestartDnsmasq() dhcp.Command {
 	return dhcp.Command{
 		Argv: []string{"systemctl", "restart", dnsmasqUnit},
-		Description: "Restart dnsmasq so it re-reads its pool ranges " +
+		Description: "Restart dnsmasq so it re-reads its configuration " +
 			"(briefly interrupts DNS and DHCP)",
 		Destructive: true,
 	}

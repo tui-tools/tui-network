@@ -476,6 +476,7 @@ func helpKeys() []ui.KeyHint {
 		{Key: "D", Desc: "the router's DHCP screen: pools, reservations and leases"},
 		{Key: "a / x", Desc: "on the DHCP screen: add / remove a reservation"},
 		{Key: "p", Desc: "on the DHCP screen: adjust a pool's range"},
+		{Key: "o", Desc: "on the DHCP screen: advertised DNS, gateway, domain and upstream DNS"},
 		{Key: "w", Desc: "the Gateways screen: the machine's uplinks and the default route"},
 		{Key: "s / x", Desc: "on the Gateways screen: set the default / fail over to a standby"},
 		{Key: "P", Desc: "on the Gateways screen: make an uplink's priority persistent"},
