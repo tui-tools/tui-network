@@ -109,6 +109,26 @@ func (a *app) dhcpLines() []string {
 		lines = append(lines, "  note           "+server.Explain)
 	}
 
+	// What the server advertises in a lease, merged across every file read,
+	// so the screen shows what a client is actually handed — dnsmasq only:
+	// Kea's options live in a config this phase does not parse.
+	if server.Kind == dhcp.KindDnsmasq {
+		opts := a.dhcpModel.Options
+		lines = append(lines, "", "Advertised to clients")
+		lines = append(lines,
+			"  dns servers    "+orRouterDefault(strings.Join(opts.DNS, ", ")),
+			"  gateway        "+orRouterDefault(opts.Gateway),
+			"  domain         "+orNone(opts.Domain))
+		upstream := strings.Join(opts.Upstreams, ", ")
+		if upstream == "" {
+			upstream = "(none set: dnsmasq uses /etc/resolv.conf)"
+		}
+		lines = append(lines, "  upstream dns   "+upstream)
+		if a.dhcpCaps.SupportsSetOptions {
+			lines = append(lines, "  tui-network    writes options to "+a.dhcpCaps.OptionsFile)
+		}
+	}
+
 	lines = append(lines, "", "Pools")
 	if len(a.dhcpModel.Pools) == 0 {
 		lines = append(lines, "  (none)")
@@ -194,6 +214,15 @@ func leaseLine(l dhcp.Lease) string {
 	return strings.Join(parts, " ")
 }
 
+// orRouterDefault renders an advertised value, saying what an absent option
+// means: dnsmasq advertises its own address.
+func orRouterDefault(value string) string {
+	if value == "" {
+		return "this router (option not set: dnsmasq advertises itself)"
+	}
+	return value
+}
+
 // versionSuffix renders " 2.90" after the server kind, empty when unknown.
 func versionSuffix(version string) string {
 	if version == "" {
@@ -223,6 +252,9 @@ func (a *app) dhcpHelpKeys() []ui.KeyHint {
 	}
 	if a.dhcpCaps.SupportsSetPoolRange {
 		hints = append(hints, ui.KeyHint{Key: "p", Desc: "pool range"})
+	}
+	if a.dhcpCaps.SupportsSetOptions {
+		hints = append(hints, ui.KeyHint{Key: "o", Desc: "dns/options"})
 	}
 	return append(hints,
 		ui.KeyHint{Key: "R", Desc: "reload"},

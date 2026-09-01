@@ -231,6 +231,11 @@ func (r *Real) loadDnsmasq(ctx context.Context) dhcp.Model {
 		pools, reservations := ParseDnsmasqConf(path, raw)
 		model.Pools = append(model.Pools, pools...)
 		model.Reservations = append(model.Reservations, reservations...)
+		options := ParseDnsmasqOptions(path, raw)
+		model.Options = MergeOptions(model.Options, options)
+		if path == DnsmasqOptionsFile {
+			model.OwnOptions = options
+		}
 	}
 
 	if raw, err := r.readFile(ctx, dnsmasqLeases); err == nil {
@@ -416,6 +421,23 @@ func (r *Real) BuildSetPoolRange(orig dhcp.Pool, newStart, newEnd string) (dhcp.
 		return dhcp.WritePlan{}, err
 	}
 	return writePlan(orig.Source, before, after, true, stageFile)
+}
+
+// BuildSetOptions renders the tool-owned options drop-in in full. The file is
+// regenerated from the form, so the diff is against whatever the drop-in says
+// now — and only that file: options set by hand in dnsmasq.conf are never
+// edited. dnsmasq does not re-read configuration files on SIGHUP, so the plan
+// restarts the service rather than reloading it.
+func (r *Real) BuildSetOptions(o dhcp.Options) (dhcp.WritePlan, error) {
+	if err := r.requireDnsmasq(); err != nil {
+		return dhcp.WritePlan{}, err
+	}
+	before := r.readOrEmpty(DnsmasqOptionsFile)
+	after, err := RenderOptionsFile(o)
+	if err != nil {
+		return dhcp.WritePlan{}, err
+	}
+	return writePlan(DnsmasqOptionsFile, before, after, true, stageFile)
 }
 
 // requireDnsmasq refuses a mutation the backend cannot make: Kea is read-only

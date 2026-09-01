@@ -17,7 +17,9 @@ var dnsmasqCapabilities = dhcp.Capabilities{
 	SupportsAddReservation:    true,
 	SupportsRemoveReservation: true,
 	SupportsSetPoolRange:      true,
+	SupportsSetOptions:        true,
 	ManagedFile:               DnsmasqManagedFile,
+	OptionsFile:               DnsmasqOptionsFile,
 }
 
 // DnsmasqManagedFile is the drop-in tui-network writes reservations to. A file

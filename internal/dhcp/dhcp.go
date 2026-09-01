@@ -105,6 +105,26 @@ type Reservation struct {
 	Source string
 }
 
+// Options is what the DHCP server advertises to its clients and where it
+// resolves upstream: the DNS servers (option 6) and router (option 3) handed
+// out in a lease, the local domain, and the `server=` forwarders dnsmasq
+// itself resolves through. Empty fields mean the server's own default — for
+// dnsmasq, advertising itself as both DNS server and router.
+type Options struct {
+	// DNS are the advertised DNS servers (option 6). A nil slice means the
+	// option is not set anywhere, so dnsmasq advertises its own address.
+	DNS []string
+	// Gateway is the advertised router (option 3), empty when the option is
+	// not set and dnsmasq advertises its own address.
+	Gateway string
+	// Domain is the `domain=` the server appends to plain hostnames and hands
+	// to clients, empty when unset.
+	Domain string
+	// Upstreams are the `server=` forwarders dnsmasq resolves through, in read
+	// order. Empty means dnsmasq uses /etc/resolv.conf.
+	Upstreams []string
+}
+
 // Server is what was found about the DHCP server on this machine.
 type Server struct {
 	// Kind is one of the Kind* constants, KindNone when neither server is
@@ -139,6 +159,14 @@ type Model struct {
 	Pools        []Pool
 	Reservations []Reservation
 	Leases       []Lease
+	// Options are the effective advertised options and upstream forwarders
+	// across every configuration file read, later files winning, so the screen
+	// shows what a client is actually handed.
+	Options Options
+	// OwnOptions are the options read from the tool-owned options drop-in
+	// alone. They seed the options editor: the form must reflect exactly the
+	// file the tool will rewrite, never a line the administrator owns.
+	OwnOptions Options
 }
 
 // Capabilities tells the UI which mutations a backend offers, so the key map is
@@ -151,9 +179,15 @@ type Capabilities struct {
 	SupportsRemoveReservation bool
 	// SupportsSetPoolRange reports whether a pool's range can be adjusted.
 	SupportsSetPoolRange bool
+	// SupportsSetOptions reports whether the advertised DHCP options (DNS,
+	// gateway, domain) and the upstream DNS forwarders can be edited.
+	SupportsSetOptions bool
 	// ManagedFile is where an added reservation lands, shown in the UI so the
 	// user knows which file a change will touch.
 	ManagedFile string
+	// OptionsFile is the drop-in the options editor rewrites, shown in the UI
+	// for the same reason.
+	OptionsFile string
 }
 
 // WritePlan is a configuration change the user is about to make: what the file
@@ -200,4 +234,8 @@ type Backend interface {
 	// to newStart..newEnd. orig identifies the pool to change, and the file it
 	// lives in, by the range it has today.
 	BuildSetPoolRange(orig Pool, newStart, newEnd string) (WritePlan, error)
+	// BuildSetOptions renders the tool-owned options drop-in from o — the
+	// advertised DNS servers, gateway and domain, and the upstream forwarders
+	// — and returns the diff plus the commands that install and apply it.
+	BuildSetOptions(o Options) (WritePlan, error)
 }

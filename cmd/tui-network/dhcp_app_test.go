@@ -98,6 +98,112 @@ func TestRemoveReservationPreviews(t *testing.T) {
 	}
 }
 
+// setFormField types a value into one of the open form's fields by key.
+func setFormField(t *testing.T, a *app, key, value string) {
+	t.Helper()
+	for i := range a.form.fields {
+		if a.form.fields[i].key == key {
+			a.form.fields[i].input.SetValue(value)
+			return
+		}
+	}
+	t.Fatalf("the form has no field %q", key)
+}
+
+// TestSetOptionsPreviewsExactlyWhatItRuns covers the o key end to end: the
+// form seeds from the tool-owned drop-in, the confirm dialog shows the diff
+// with install + restart, and the two previewed commands are the two that run
+// — after which the screen advertises the new values.
+func TestSetOptionsPreviewsExactlyWhatItRuns(t *testing.T) {
+	a, _ := newTestApp(t)
+	fake := openDHCPScreen(t, a)
+
+	drain(t, a, press(a, "o"))
+	if a.mode != modeForm {
+		t.Fatalf("o did not open the options form (mode %d, status: %s)", a.mode, a.status)
+	}
+	// The form is seeded from the demo's own drop-in, and only from it: the
+	// domain= the sample router sets by hand in dnsmasq.conf stays out.
+	if got := a.form.get("adns"); got != "192.0.2.1" {
+		t.Errorf("DNS seeded %q, want the drop-in's 192.0.2.1", got)
+	}
+	if got := a.form.get("upstream"); got != "198.51.100.53" {
+		t.Errorf("upstream seeded %q, want the drop-in's 198.51.100.53", got)
+	}
+	if got := a.form.get("domain"); got != "" {
+		t.Errorf("domain seeded %q from a file the tool does not own", got)
+	}
+
+	setFormField(t, a, "adns", "192.0.2.8, 192.0.2.9")
+	setFormField(t, a, "agw", "192.0.2.254")
+	setFormField(t, a, "upstream", "9.9.9.9")
+	drain(t, a, press(a, "enter"))
+
+	if a.mode != modeConfirm {
+		t.Fatalf("the form did not open a confirm dialog (status: %s)", a.status)
+	}
+	if !strings.Contains(a.confirm.Command, "install -m 644") ||
+		!strings.Contains(a.confirm.Command, "systemctl restart dnsmasq") {
+		t.Errorf("the preview is not install + restart:\n%s", a.confirm.Command)
+	}
+	for _, want := range []string{"+dhcp-option=6,192.0.2.8,192.0.2.9",
+		"+dhcp-option=3,192.0.2.254", "+server=9.9.9.9"} {
+		if !strings.Contains(a.confirm.Body, want) {
+			t.Errorf("the diff does not show %q:\n%s", want, a.confirm.Body)
+		}
+	}
+
+	drain(t, a, press(a, "y"))
+	ran := fake.Ran()
+	if len(ran) != 2 {
+		t.Fatalf("ran %d commands, want install + restart: %v", len(ran), ran)
+	}
+	if !strings.Contains(fake.Preview(ran[0]), "install -m 644") ||
+		fake.Preview(ran[1]) != "sudo -n systemctl restart dnsmasq" {
+		t.Errorf("ran the wrong commands: %q then %q",
+			fake.Preview(ran[0]), fake.Preview(ran[1]))
+	}
+	if got := strings.Join(a.dhcpModel.Options.DNS, ","); got != "192.0.2.8,192.0.2.9" {
+		t.Errorf("after applying, the model advertises DNS %q", got)
+	}
+	if a.dhcpModel.Options.Gateway != "192.0.2.254" {
+		t.Errorf("after applying, the model advertises gateway %q",
+			a.dhcpModel.Options.Gateway)
+	}
+}
+
+// TestOptionsFormRefusesABadValue: a value the renderer refuses never reaches
+// a confirm dialog; the form stays open with the error in the status line.
+func TestOptionsFormRefusesABadValue(t *testing.T) {
+	a, _ := newTestApp(t)
+	fake := openDHCPScreen(t, a)
+
+	drain(t, a, press(a, "o"))
+	setFormField(t, a, "domain", "lan;reboot")
+	drain(t, a, press(a, "enter"))
+	if a.mode == modeConfirm {
+		t.Fatalf("a bad domain reached the confirm dialog")
+	}
+	if len(fake.Ran()) != 0 {
+		t.Errorf("a refused form ran %v", fake.Ran())
+	}
+}
+
+// TestDHCPScreenShowsAdvertisedValues: the summary surfaces what clients are
+// handed, merged across every file the server reads.
+func TestDHCPScreenShowsAdvertisedValues(t *testing.T) {
+	a, _ := newTestApp(t)
+	openDHCPScreen(t, a)
+
+	view := strings.Join(a.dhcpLines(), "\n")
+	for _, want := range []string{"Advertised to clients", "192.0.2.1",
+		"lan.example.test", "198.51.100.53"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the DHCP screen does not surface %q:\n%s", want, view)
+		}
+	}
+}
+
 // hasReservation reports whether the model carries a reservation for the MAC.
 func hasReservation(model dhcp.Model, mac string) bool {
 	for _, r := range model.Reservations {

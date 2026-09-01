@@ -7,7 +7,18 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tui-tools/tui-kit/theme"
 	"github.com/tui-tools/tui-kit/ui"
+	"github.com/tui-tools/tui-network/internal/dhcp"
 	"github.com/tui-tools/tui-network/internal/network"
+)
+
+// formKind says what a submitted form builds: a .network file, or the DHCP
+// options drop-in. One form type serves both, so the field mechanics — focus,
+// cycling, the dialog rendering — live in one place.
+type formKind int
+
+const (
+	formNetworkFile formKind = iota
+	formDHCPOptions
 )
 
 // fieldKind tells a cycled choice from a free-text field.
@@ -53,21 +64,26 @@ func (f formField) value() string {
 type configForm struct {
 	fields []formField
 	active int
-	// link is the interface the file is being written for, kept for the title.
-	link string
+	// kind says which builder a submit goes to.
+	kind formKind
+	// title heads the dialog.
+	title string
+}
+
+// newFormText builds one text input for a form field.
+func newFormText(placeholder, value string) textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = placeholder
+	ti.SetValue(value)
+	ti.CharLimit = 200
+	ti.Prompt = ""
+	return ti
 }
 
 // newConfigForm builds the form, seeded from the file that already exists.
 func newConfigForm(link string, spec network.FileSpec,
 	caps network.Capabilities) configForm {
-	text := func(placeholder, value string) textinput.Model {
-		ti := textinput.New()
-		ti.Placeholder = placeholder
-		ti.SetValue(value)
-		ti.CharLimit = 200
-		ti.Prompt = ""
-		return ti
-	}
+	text := newFormText
 
 	dhcp := formField{key: "dhcp", label: "DHCP", kind: fieldChoice,
 		options: caps.DHCPModes,
@@ -100,7 +116,37 @@ func newConfigForm(link string, spec network.FileSpec,
 			help:  "Where it is installed. It must be under " + caps.ConfigDir + "."},
 	}
 
-	f := configForm{fields: fields, link: link}
+	f := configForm{fields: fields, kind: formNetworkFile,
+		title: "Network file for " + link}
+	f.focusActive()
+	return f
+}
+
+// newDHCPOptionsForm builds the editor for the DHCP options drop-in, seeded
+// from what that file — and only that file — says today. The rendered file is
+// regenerated wholesale from these fields, so seeding from anywhere else would
+// copy the administrator's own lines into a file the tool owns.
+func newDHCPOptionsForm(opts dhcp.Options, ownFile string) configForm {
+	fields := []formField{
+		{key: "adns", label: "DNS servers", kind: fieldText,
+			input: newFormText("192.0.2.1, 9.9.9.9", strings.Join(opts.DNS, ", ")),
+			help: "Advertised to clients (option 6), comma separated. " +
+				"Empty advertises this router itself, dnsmasq's default."},
+		{key: "agw", label: "Gateway", kind: fieldText,
+			input: newFormText("192.0.2.1", opts.Gateway),
+			help: "Advertised router (option 3). " +
+				"Empty advertises this router itself, dnsmasq's default."},
+		{key: "domain", label: "Domain", kind: fieldText,
+			input: newFormText("lan.example.test", opts.Domain),
+			help:  "domain= for DHCP and local DNS names. Empty leaves it unset."},
+		{key: "upstream", label: "Upstream DNS", kind: fieldText,
+			input: newFormText("198.51.100.53, 9.9.9.9",
+				strings.Join(opts.Upstreams, ", ")),
+			help: "server= forwarders dnsmasq resolves through, comma " +
+				"separated. Empty falls back to /etc/resolv.conf."},
+	}
+	f := configForm{fields: fields, kind: formDHCPOptions,
+		title: "DHCP and DNS options — " + ownFile}
 	f.focusActive()
 	return f
 }
@@ -209,7 +255,7 @@ func (f configForm) view(t theme.Theme, width, height int) string {
 	inner := min(max(width-8, 30), 72)
 	valueWidth := max(inner-labelWidth-6, 10)
 
-	lines := []string{t.Title.Render("Network file for " + f.link), ""}
+	lines := []string{t.Title.Render(f.title), ""}
 	for i, field := range f.fields {
 		label := t.Muted.Render(ui.Pad(field.label, labelWidth))
 		var value string

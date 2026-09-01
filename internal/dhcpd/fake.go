@@ -20,9 +20,17 @@ dhcp-range=192.0.2.50,192.0.2.150,255.255.255.0,12h
 var demoManagedConf = dnsmasqManagedHeader +
 	"dhcp-host=00:00:5e:00:53:01,192.0.2.10,printer\n"
 
-// demoConfOrder is the order the demo reads its files, so the pools and
-// reservations parse the same way every time.
-var demoConfOrder = []string{dnsmasqMainConf, DnsmasqManagedFile}
+// demoOptionsConf is the options drop-in the tool manages on the sample
+// router: one advertised DNS server and one upstream forwarder, so the o key
+// opens a form with something in it.
+var demoOptionsConf = dnsmasqOptionsHeader +
+	"dhcp-option=6,192.0.2.1\n" +
+	"server=198.51.100.53\n"
+
+// demoConfOrder is the order the demo reads its files — the main file, then
+// the drop-in directory alphabetically, exactly like the real backend — so the
+// pools, reservations and options parse the same way every time.
+var demoConfOrder = []string{dnsmasqMainConf, DnsmasqOptionsFile, DnsmasqManagedFile}
 
 // Fake is an in-memory dnsmasq. It backs --demo and the tests: every key works,
 // every command is built and previewed exactly as the real backend builds it,
@@ -50,6 +58,7 @@ func NewFake() *Fake {
 func (f *Fake) reset() {
 	f.files = map[string]string{
 		dnsmasqMainConf:    demoMainConf,
+		DnsmasqOptionsFile: demoOptionsConf,
 		DnsmasqManagedFile: demoManagedConf,
 	}
 	f.staged = map[string]string{}
@@ -82,10 +91,16 @@ func (f *Fake) reset() {
 func (f *Fake) reload() {
 	f.model.Pools = nil
 	f.model.Reservations = nil
+	f.model.Options, f.model.OwnOptions = dhcp.Options{}, dhcp.Options{}
 	for _, path := range demoConfOrder {
 		pools, reservations := ParseDnsmasqConf(path, f.files[path])
 		f.model.Pools = append(f.model.Pools, pools...)
 		f.model.Reservations = append(f.model.Reservations, reservations...)
+		options := ParseDnsmasqOptions(path, f.files[path])
+		f.model.Options = MergeOptions(f.model.Options, options)
+		if path == DnsmasqOptionsFile {
+			f.model.OwnOptions = options
+		}
 	}
 	f.model.Server.Explain = explainServer(f.model.Server, len(f.model.Pools))
 }
@@ -165,6 +180,17 @@ func (f *Fake) BuildSetPoolRange(orig dhcp.Pool, newStart, newEnd string) (dhcp.
 		return dhcp.WritePlan{}, err
 	}
 	return writePlan(orig.Source, before, after, true, f.stage)
+}
+
+// BuildSetOptions stages the tool-owned options drop-in regenerated in full,
+// through the same renderer the real backend uses.
+func (f *Fake) BuildSetOptions(o dhcp.Options) (dhcp.WritePlan, error) {
+	before := f.files[DnsmasqOptionsFile]
+	after, err := RenderOptionsFile(o)
+	if err != nil {
+		return dhcp.WritePlan{}, err
+	}
+	return writePlan(DnsmasqOptionsFile, before, after, true, f.stage)
 }
 
 // stage records the pending content under an in-memory name. --demo writes no

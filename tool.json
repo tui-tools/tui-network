@@ -78,6 +78,10 @@
       "action": "On the DHCP screen: adjust a pool's range (dnsmasq)"
     },
     {
+      "key": "o",
+      "action": "On the DHCP screen: set the advertised DNS servers, gateway and domain, and the upstream DNS forwarders (dnsmasq)"
+    },
+    {
       "key": "w",
       "action": "Open the Gateways screen: the machine's uplinks and the default route"
     },
@@ -185,6 +189,10 @@
         {
           "range": ">=2.80",
           "impact": "reservations tui-network adds are written to a drop-in of its own (/etc/dnsmasq.d/tui-network.conf) and applied with `systemctl reload dnsmasq`; a pool range change needs `systemctl restart dnsmasq`, which briefly interrupts DNS and DHCP"
+        },
+        {
+          "range": ">=2.80",
+          "impact": "the advertised DHCP options (DNS servers, gateway, domain) and the upstream `server=` forwarders are edited through a drop-in of the tool's own (/etc/dnsmasq.d/50-tui-network.conf), regenerated in full so hand-maintained lines are never touched; with option 6 or 3 absent dnsmasq advertises its own address, so empty fields are left absent, and the change is applied with `systemctl restart dnsmasq` because dnsmasq does not re-read configuration files on SIGHUP"
         }
       ],
       "tested": []

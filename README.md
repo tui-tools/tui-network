@@ -217,13 +217,27 @@ with its MAC, address, hostname and how long it has left. dnsmasq serves DNS and
 DHCP from one process, so the screen says so: on such a router the resolver view
 on the links screen is only what systemd-resolved reports.
 
-On a dnsmasq machine three changes are offered, each previewed like every other:
+On a dnsmasq machine four changes are offered, each previewed like every other:
 add a reservation (`a`, written to a drop-in of the tool's own,
-`/etc/dnsmasq.d/tui-network.conf`), remove one (`x`), and adjust a pool's range
-(`p`). Each is a file edit shown as a unified diff, then installed and applied —
-a reservation with `systemctl reload dnsmasq`, a pool range with a restart,
-which the dialog says interrupts service. Kea is read-only for now, and a
-machine with neither server shows an empty screen that explains why.
+`/etc/dnsmasq.d/tui-network.conf`), remove one (`x`), adjust a pool's range
+(`p`), and edit the DHCP and DNS options (`o`). Each is a file edit shown as a
+unified diff, then installed and applied — a reservation with `systemctl reload
+dnsmasq`, a pool range or an options change with a restart, which the dialog
+says interrupts service. Kea is read-only for now, and a machine with neither
+server shows an empty screen that explains why.
+
+`o` opens a guided form for what every router deployment touches on day one:
+the DNS servers the leases advertise (option 6), the advertised gateway
+(option 3), the local domain, and the upstream `server=` forwarders dnsmasq
+resolves through. The screen's summary shows the effective values merged
+across every file dnsmasq reads, but the form seeds from — and the write
+regenerates, in full — a second drop-in of the tool's own,
+`/etc/dnsmasq.d/50-tui-network.conf`, so a line the administrator maintains by
+hand is never rewritten. Empty DNS and gateway fields render no option at all:
+with the option absent dnsmasq advertises its own address, which is what a
+router wants and stays right if it is ever renumbered. The change is applied
+with a restart, because dnsmasq does not re-read configuration files on
+SIGHUP.
 
 ## The router's gateways and failover
 
@@ -373,6 +387,8 @@ name that does not end in `.network`.
 | `s` / `S` | Set the link's DNS servers / search domains |
 | `e` | Edit the link's `.network` file, with a diff to confirm |
 | `D` | The router's DHCP screen: pools, reservations and leases |
+| `a` / `x` / `p` | On the DHCP screen: add / remove a reservation, adjust a pool's range |
+| `o` | On the DHCP screen: advertised DNS, gateway, domain and upstream forwarders |
 | `w` | The Gateways screen: the uplinks and the default route |
 | `s` / `x` | On the Gateways screen: set the default / fail over to a standby |
 | `P` | On the Gateways screen: make an uplink's priority persistent |
@@ -424,6 +440,9 @@ reconfigure or fight with whoever does own it.
   reservations and leases, from the lease file and the configuration.
 - On dnsmasq, add or remove a reservation and adjust a pool's range, each
   reviewed as a unified diff and applied with a `systemctl reload` or `restart`.
+- On dnsmasq, set what DHCP advertises — DNS servers (option 6), gateway
+  (option 3) and domain — and the upstream `server=` forwarders, through a
+  guided form that rewrites only a drop-in of the tool's own.
 - Enumerate a multi-uplink router's gateways from the default routes, mark the
   active one, and probe each uplink's reachability with `ip -j route get`.
 - Switch the default route or fail over to a standby uplink, live with `ip route
@@ -492,6 +511,7 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | --- | --- |
 | `>=2.80` | the DHCP screen reads the lease file (/var/lib/misc/dnsmasq.leases), the `dhcp-range` pools and `dhcp-host` reservations from the configuration, and dnsmasq serves DNS and DHCP from one process, so the resolver view on the links screen is only what systemd-resolved reports |
 | `>=2.80` | reservations tui-network adds are written to a drop-in of its own (/etc/dnsmasq.d/tui-network.conf) and applied with `systemctl reload dnsmasq`; a pool range change needs `systemctl restart dnsmasq`, which briefly interrupts DNS and DHCP |
+| `>=2.80` | the advertised DHCP options (DNS servers, gateway, domain) and the upstream `server=` forwarders are edited through a drop-in of the tool's own (/etc/dnsmasq.d/50-tui-network.conf), regenerated in full so hand-maintained lines are never touched; empty fields render no option, which leaves dnsmasq advertising its own address, and the change is applied with `systemctl restart dnsmasq` because dnsmasq does not re-read configuration files on SIGHUP |
 
 ### kea
 
