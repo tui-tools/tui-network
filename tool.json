@@ -79,7 +79,7 @@
     },
     {
       "key": "o",
-      "action": "On the DHCP screen: set the advertised DNS servers, gateway and domain, and the upstream DNS forwarders (dnsmasq)"
+      "action": "Set advertised DHCP options (DNS, gateway, domain) and upstream forwarders (dnsmasq)"
     },
     {
       "key": "w",
@@ -192,7 +192,7 @@
         },
         {
           "range": ">=2.80",
-          "impact": "the advertised DHCP options (DNS servers, gateway, domain) and the upstream `server=` forwarders are edited through a drop-in of the tool's own (/etc/dnsmasq.d/50-tui-network.conf), regenerated in full so hand-maintained lines are never touched; with option 6 or 3 absent dnsmasq advertises its own address, so empty fields are left absent, and the change is applied with `systemctl restart dnsmasq` because dnsmasq does not re-read configuration files on SIGHUP"
+          "impact": "Advertised DHCP options (DNS, gateway, domain) and upstream server= forwarders are edited through the tool's own drop-in (/etc/dnsmasq.d/50-tui-network.conf), regenerated whole; lines the tool does not own are never touched. Applying restarts dnsmasq."
         }
       ],
       "tested": []
