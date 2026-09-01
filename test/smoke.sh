@@ -211,6 +211,23 @@ case "$manager" in
       "$bin --check" \
       '"configFiles": [1-9]'
 
+    # 6b. The .netdev units are read too, and they agree with the directory.
+    #     This is the read half of the VLAN and bridge feature: creating one is
+    #     driven from the TUI in the router lab, not here, because it
+    #     re-parents a link and would drop this very ssh session. What is
+    #     asserted here is that the tool counts the units the machine actually
+    #     has — zero on a plain cloud image, which is a real answer, not a
+    #     missing read.
+    #     The count is over unique file names, in the same way networkd itself
+    #     resolves a name that appears in several of its directories.
+    netdevs=$(for dir in /etc/systemd/network /run/systemd/network \
+      /usr/lib/systemd/network /lib/systemd/network; do
+      [[ -d $dir ]] && ls -1 "$dir" 2>/dev/null | grep -E '\.netdev$'
+    done | sort -u | wc -l)
+    check "the .netdev unit count matches the search path ($netdevs)" \
+      "$bin --check | python3 -c 'import json,sys;print(json.load(sys.stdin)[\"netdevs\"])'" \
+      "^$netdevs\$"
+
     # 7. And it is *the right one*. A count alone is not enough: every systemd
     #    ships a handful of world-readable templates in /usr/lib/systemd/network,
     #    so a machine whose real configuration the tool could not open still

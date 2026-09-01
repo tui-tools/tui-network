@@ -127,7 +127,7 @@ Upgrades then arrive with the rest of your system updates.
 ### Any distribution, static binary
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-network/releases/download/v0.1.2/tui-network_0.1.2_linux_amd64.tar.gz | tar -xz tui-network
+curl -fsSL https://github.com/tui-tools/tui-network/releases/download/v0.2.0/tui-network_0.2.0_linux_amd64.tar.gz | tar -xz tui-network
 sudo install -m0755 tui-network /usr/local/bin/tui-network
 ```
 
@@ -193,10 +193,11 @@ every command is built and previewed for real, and nothing touches your system.
 
 `y` runs the commands shown, `n` does not. There is no other path to a change:
 the UI hands the same values to the preview and to the runner, so what you read
-is what executes. Editing a `.network` file is the only action that is more than
-one command — the file is staged in a temporary directory, diffed against what
-is on disk, and then installed and reloaded — and both lines are on screen
-before either runs.
+is what executes. Anything that writes a file is more than one command — the
+file is staged in a temporary directory, diffed against what is on disk, then
+installed and reloaded — and every line is on screen before any of them runs.
+Building a VLAN or a bridge writes several files at once, and they are all in
+the same diff and the same list of commands.
 
 ## One link, in full
 
@@ -364,10 +365,51 @@ a link systemd-networkd does not manage.
 | `s` | `resolvectl dns <link> <servers…>` |
 | `S` | `resolvectl domain <link> <domains…>` |
 | `e` | `install -m 644 <staged file> /etc/systemd/network/<name>.network`, then `networkctl reload` |
+| `V` | one `install -m 644` per file — the `.netdev` unit and each member's `.network` — then a single `networkctl reload` |
+| `X` | `rm -f -- /etc/systemd/network/<name>.netdev`, one `install -m 644` per member file, then `networkctl reload` |
 
 Nothing else. There is no code path that writes to `/etc` other than that
-`install`, and it refuses any destination outside `/etc/systemd/network` or any
-name that does not end in `.network`.
+`install` and that `rm`, and both refuse any destination outside
+`/etc/systemd/network` or any name that does not end in `.network` or
+`.netdev`. The `rm` is narrower still: it only ever names a `.netdev` unit, so
+no mistake there can delete a link's configuration.
+
+### VLANs and bridges
+
+`V` on the links screen asks what to build, then opens a form:
+
+- **vlan** — a name, the parent link (picked from the links `systemd-networkd`
+  manages) and an 802.1Q id between 1 and 4094.
+- **bridge** — a name and the member links, ticked in a list with `space`.
+
+What gets written is two things at once, because neither half works alone:
+
+- `/etc/systemd/network/20-<name>.netdev`, declaring the device
+  (`[NetDev] Name=`, `Kind=`, and `[VLAN] Id=` for a VLAN);
+- a `VLAN=<name>` line in the parent's `.network` file, or a `Bridge=<name>`
+  line in each member's — added to the file the link already has, keeping
+  everything else in it. A link with no `.network` file yet gets a minimal one
+  under `/etc/systemd/network`.
+
+All of it is shown as **one unified diff over every file**, followed by the
+exact commands: an `install -m 644` per file, then a single `networkctl reload`
+at the end — never one in the middle, which is where networkd would see half a
+device.
+
+> **This can lock you out.** Enslaving a link hands its addresses to the new
+> device. If you are connected over the link you are re-parenting, you will lose
+> the session. The confirm dialog says so, naming the links involved, before
+> anything is written.
+
+A name that is already taken — by another `.netdev` unit, by an existing link,
+or by a unit file already in place — is refused before a plan is built, and so
+is a member link `systemd-networkd` does not manage.
+
+`X` is the mirror image, on a device `tui-network` itself created: the `.netdev`
+unit is deleted and the member lines that named it are stripped, again as one
+diff, one confirm and one reload. A unit somebody else wrote is shown but never
+removed — the tool only takes back what it put there, which it knows from the
+`# Written by tui-network` banner it writes into every file it generates.
 
 ## Keys
 
@@ -386,6 +428,8 @@ name that does not end in `.network`.
 | `f` | Flush the resolver cache |
 | `s` / `S` | Set the link's DNS servers / search domains |
 | `e` | Edit the link's `.network` file, with a diff to confirm |
+| `V` | Create a VLAN or a bridge: a `.netdev` unit and its member lines |
+| `X` | Remove the selected VLAN or bridge, if `tui-network` wrote its unit |
 | `D` | The router's DHCP screen: pools, reservations and leases |
 | `a` / `x` / `p` | On the DHCP screen: add / remove a reservation, adjust a pool's range |
 | `o` | On the DHCP screen: advertised DNS, gateway, domain and upstream forwarders |
@@ -396,9 +440,10 @@ name that does not end in `.network`.
 | `?` | Help |
 | `q` | Quit |
 
-In the **network file** form: `tab` / `shift+tab` move between fields, `←`/`→`
-cycle a choice, `enter` opens a picker on a choice field and submits from a text
-field, `esc` cancels.
+In the **network file**, **VLAN** and **bridge** forms: `tab` / `shift+tab` move
+between fields, `←`/`→` cycle a choice, `enter` opens a picker on a choice
+field and submits from a text field, `esc` cancels. In the bridge's member
+list, `space` ticks a link and `enter` accepts the set.
 
 ![The .network editor](docs/screenshots/tui-network-edit.png)
 
@@ -436,6 +481,10 @@ reconfigure or fight with whoever does own it.
 - Write a `.network` file from a guided form — match, DHCP mode, static address,
   gateway, DNS servers, search domains — reviewed as a unified diff, installed
   with `install -m 644` and applied with `networkctl reload`.
+- Create a VLAN or a bridge: a `.netdev` unit plus the `VLAN=` or `Bridge=`
+  line in every member's `.network` file, reviewed as one unified diff over all
+  of them, installed file by file and applied with a single `networkctl
+  reload` — and remove one again the same way, if `tui-network` wrote it.
 - Read the router's DHCP server, dnsmasq or ISC Kea, detected: its pools,
   reservations and leases, from the lease file and the configuration.
 - On dnsmasq, add or remove a reservation and adjust a pool's range, each
@@ -457,8 +506,10 @@ reconfigure or fight with whoever does own it.
   The `network.Backend` interface is where one would go; nothing in the UI names
   `networkctl`.
 - **No netplan**, no `wpa_supplicant`, no wireless scanning or joining.
-- **No `.netdev` files**: bridges, bonds and VLANs are shown as links but cannot
-  be created.
+- **Only VLANs and bridges among the `.netdev` kinds.** Bonds, VXLANs, tunnels
+  and the rest are shown as links, and a unit `tui-network` did not write is
+  never edited or removed. There is no key that changes a device after it
+  exists: remove it and build it again.
 - **No free-form file editing.** The form writes the settings it knows; the file
   is shown whole on the detail screen, and anything else is a job for `$EDITOR`.
   A file the form rewrites loses its comments, which the diff shows before you
@@ -497,6 +548,7 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | `<249` | `networkctl up` and `down` do not exist; the keys are dropped from the hint bar and reconfigure is offered in their place |
 | `>=245` | no released systemd emits JSON from `resolvectl status`, so DNS servers and search domains are read from the text output of `resolvectl dns` and `resolvectl domain` |
 | `>=245` | the Gateways screen (w) reads the default routes from `ip -j route` (multipath expanded per next hop) and reachability from `ip -j route get`; the default-route switch and failover run `ip route replace` live, and a managed link also gets a persistent `[Route]` drop-in reloaded with `networkctl` |
+| `>=245` | VLANs and bridges (V) are written as a .netdev unit under /etc/systemd/network plus a VLAN= or Bridge= line in each member's .network file, previewed as one multi-file diff, installed with `install -m 644` and applied with a single `networkctl reload`; X removes a unit tui-network wrote with `rm -f` |
 
 ### dnsmasq
 
@@ -559,16 +611,18 @@ The UI never builds a `networkctl` command line. It talks to
 `internal/network.Backend`, which returns a manager-neutral model:
 
 ```
-Model{Running, ResolvedRunning, ForeignManager, Links, Routes, ConfigFiles}
+Model{Running, ResolvedRunning, ForeignManager, Links, Routes, ConfigFiles,
+      NetdevFiles}
 Link{Index, Name, Type, Kind, Setup, Operational, MAC, MTU, Driver,
      Addresses, Gateways, DNS, SearchDomains, NetworkFile, DHCP,
      Managed, ReadOnlyReason}
 ConfigFile{Path, Raw, Settings, Links, MatchName}
+NetdevFile{Path, Raw, Settings, Name, Kind, Owned}
 ```
 
 `internal/networkd` is the only package that starts a process. It drives four
 programs through four kit runners — `networkctl`, `resolvectl`, `ip` and
-`journalctl` — plus `install` for the one write, and
+`journalctl` — plus `install` for the writes and `rm` for the one removal, and
 [`check-exec.sh`](https://github.com/tui-tools/tui-kit/blob/main/tools/check-exec.sh)
 fails the build if any other package imports `os/exec`.
 
@@ -600,10 +654,15 @@ widgets, the config loader and the command runner shared by the whole family.
 
 - Taking a link down, or reconfiguring it, can drop the session you are working
   over. The confirm dialog says so before you agree.
+- So can enslaving a link to a bridge or a VLAN, and so can releasing it again:
+  the link's addresses move to the new device on the next reload. The dialog
+  names the links being re-parented and says you will lose the session if you
+  are connected over one of them.
 - `tui-network` re-reads the network after every change, so what you see is what
   the system reports, not what the tool assumed.
-- The `.network` file is staged in a private temporary directory first, and the
-  only privileged step that *changes* anything is the `install` you approved.
+- Every file is staged in a private temporary directory first, and the only
+  privileged steps that *change* anything are the `install` commands you
+  approved — plus, for `X`, the `rm` of a `.netdev` unit this tool wrote.
 - One read escalates, unprompted: a `.network` file the plain read cannot open
   is re-read with `sudo -n cat`. netplan renders its files into
   `/run/systemd/network` as mode 0640 `root:systemd-network`, so on a stock

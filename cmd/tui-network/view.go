@@ -37,6 +37,8 @@ func (a *app) View() string {
 		return a.input.View(a.theme, a.width, a.height)
 	case modePicker:
 		return a.picker.View(a.theme, a.width, a.height)
+	case modeMembers:
+		return a.members.view(a.theme, a.width, a.height)
 	case modeForm:
 		return a.form.view(a.theme, a.width, a.height)
 	case modeHelp:
@@ -405,20 +407,124 @@ func orNone(value string) string {
 // dialog does not scroll, so a diff longer than the terminal would push its
 // own title and the command preview off the screen — and the command preview
 // is the one thing that must never be missed.
-const dialogDiffLines = 14
+const dialogDiffLines = 24
 
-// diffForDialog trims a diff to what fits above the command preview, saying
-// how much was left out. The whole file is on the detail screen, which is
-// where a reader who wants every line should be looking anyway.
+// minDiffLines is the least any one file gets in a multi-file plan: enough for
+// its two header lines, its hunk header and a line of the change itself.
+const minDiffLines = 4
+
+// diffForDialog trims a diff to what fits above the command preview, saying how
+// much was left out.
+//
+// A VLAN or a bridge is several files in one diff, and trimming from the end
+// would drop whole files off the bottom — so the budget is shared between them
+// instead: a file that fits keeps its full block, and what it does not use goes
+// to the ones that do not. Every file in the change is on screen either way,
+// and the whole text is still on the detail screen for a reader who wants every
+// line.
 func (a *app) diffForDialog(diff string) string {
-	budget := max(min(a.height-12, dialogDiffLines), 4)
-	lines := strings.Split(strings.TrimSuffix(diff, "\n"), "\n")
-	if len(lines) <= budget {
+	budget := max(min(a.height-12, dialogDiffLines), minDiffLines)
+	blocks := diffBlocks(diff)
+	if len(blocks) == 0 {
 		return diff
 	}
-	kept := append([]string{}, lines[:budget]...)
-	return strings.Join(kept, "\n") + "\n… " +
-		strconv.Itoa(len(lines)-budget) + " more diff lines"
+	if total(blocks) <= budget {
+		return diff
+	}
+	shares := shareBudget(blocks, budget)
+	kept := make([]string, 0, len(blocks))
+	for i, block := range blocks {
+		kept = append(kept, trimBlock(block, shares[i]))
+	}
+	return strings.Join(kept, "\n")
+}
+
+// wrapForDialog folds a sentence to the dialog's inner width. The kit's dialog
+// does not wrap, and a warning about losing the session is the one line in a
+// confirm dialog that must not be cut off at the border.
+func (a *app) wrapForDialog(text string) string {
+	// The box takes four columns from the terminal and its border and padding
+	// take six more.
+	width := max(a.width-10, 30)
+	var lines []string
+	for _, paragraph := range strings.Split(text, "\n") {
+		line := ""
+		for _, word := range strings.Fields(paragraph) {
+			switch {
+			case line == "":
+				line = word
+			case len(line)+1+len(word) <= width:
+				line += " " + word
+			default:
+				lines = append(lines, line)
+				line = word
+			}
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// diffBlocks splits a unified diff into one block of lines per file: a `---`
+// line opens a new one.
+func diffBlocks(diff string) [][]string {
+	trimmed := strings.TrimSuffix(diff, "\n")
+	if trimmed == "" {
+		return nil
+	}
+	var blocks [][]string
+	for _, line := range strings.Split(trimmed, "\n") {
+		if strings.HasPrefix(line, "--- ") || len(blocks) == 0 {
+			blocks = append(blocks, nil)
+		}
+		blocks[len(blocks)-1] = append(blocks[len(blocks)-1], line)
+	}
+	return blocks
+}
+
+// total is how many lines the blocks hold together.
+func total(blocks [][]string) int {
+	sum := 0
+	for _, block := range blocks {
+		sum += len(block)
+	}
+	return sum
+}
+
+// shareBudget hands each block a slice of the budget: everything it needs when
+// it fits in an equal share, and an equal cut of what the smaller blocks left
+// behind when it does not.
+func shareBudget(blocks [][]string, budget int) []int {
+	shares := make([]int, len(blocks))
+	share := max(budget/len(blocks), minDiffLines)
+	spare, greedy := 0, 0
+	for i, block := range blocks {
+		if len(block) <= share {
+			shares[i] = len(block)
+			spare += share - len(block)
+			continue
+		}
+		shares[i] = share
+		greedy++
+	}
+	if greedy == 0 {
+		return shares
+	}
+	for i, block := range blocks {
+		if len(block) > share {
+			shares[i] = min(share+spare/greedy, len(block))
+		}
+	}
+	return shares
+}
+
+// trimBlock cuts one file's block to its share, saying how much was left out.
+func trimBlock(block []string, share int) string {
+	if len(block) <= share {
+		return strings.Join(block, "\n")
+	}
+	return strings.Join(block[:share], "\n") + "\n… " +
+		strconv.Itoa(len(block)-share) + " more diff lines"
 }
 
 // shortHelpKeys is the single-line hint bar of the overview.
@@ -431,6 +537,7 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 	return append(hints,
 		ui.KeyHint{Key: "c", Desc: "reconfigure"},
 		ui.KeyHint{Key: "e", Desc: "edit file"},
+		ui.KeyHint{Key: "V", Desc: "vlan/bridge"},
 		ui.KeyHint{Key: "s", Desc: "dns"},
 		ui.KeyHint{Key: "D", Desc: "dhcp"},
 		ui.KeyHint{Key: "w", Desc: "gateways"},
@@ -473,6 +580,8 @@ func helpKeys() []ui.KeyHint {
 		{Key: "f", Desc: "flush the resolver cache"},
 		{Key: "s / S", Desc: "set the link's DNS servers / search domains"},
 		{Key: "e", Desc: "edit the link's .network file, with a diff to confirm"},
+		{Key: "V", Desc: "create a VLAN or a bridge: a .netdev unit and its member lines"},
+		{Key: "X", Desc: "remove the selected VLAN or bridge, if tui-network wrote it"},
 		{Key: "D", Desc: "the router's DHCP screen: pools, reservations and leases"},
 		{Key: "a / x", Desc: "on the DHCP screen: add / remove a reservation"},
 		{Key: "p", Desc: "on the DHCP screen: adjust a pool's range"},

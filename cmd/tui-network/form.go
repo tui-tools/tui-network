@@ -19,6 +19,10 @@ type formKind int
 const (
 	formNetworkFile formKind = iota
 	formDHCPOptions
+	// formVLAN and formBridge build a .netdev unit and the member lines that
+	// attach it, which is one plan over several files.
+	formVLAN
+	formBridge
 )
 
 // fieldKind tells a cycled choice from a free-text field.
@@ -27,6 +31,9 @@ type fieldKind int
 const (
 	fieldChoice fieldKind = iota
 	fieldText
+	// fieldMembers is a set rather than a value: the links a bridge gathers,
+	// ticked in a list of their own.
+	fieldMembers
 )
 
 // formField is one row of the .network editor.
@@ -40,19 +47,26 @@ type formField struct {
 	choice  int
 	// input holds the state of a text field.
 	input textinput.Model
+	// chosen holds the state of a members field: the ticked options, in the
+	// order they are listed.
+	chosen []string
 	// help is a one-line hint shown under the form.
 	help string
 }
 
-// value returns the current value of the field.
+// value returns the current value of the field, as one line.
 func (f formField) value() string {
-	if f.kind == fieldChoice {
+	switch f.kind {
+	case fieldChoice:
 		if f.choice < 0 || f.choice >= len(f.options) {
 			return ""
 		}
 		return f.options[f.choice]
+	case fieldMembers:
+		return strings.Join(f.chosen, " ")
+	default:
+		return strings.TrimSpace(f.input.Value())
 	}
-	return strings.TrimSpace(f.input.Value())
 }
 
 // configForm is the guided editor for a link's .network file.
@@ -151,6 +165,44 @@ func newDHCPOptionsForm(opts dhcp.Options, ownFile string) configForm {
 	return f
 }
 
+// newVLANForm builds the editor for a new VLAN: the device's name, the link it
+// rides on, and the 802.1Q id. The parent is a choice over the links networkd
+// manages, because a VLAN on a link this tool may not change is a device that
+// would never come up.
+func newVLANForm(parents []string) configForm {
+	fields := []formField{
+		{key: "name", label: "Name", kind: fieldText,
+			input: newFormText("vlan10", ""),
+			help: "The device's name, and the name of the " +
+				"/etc/systemd/network unit written for it."},
+		{key: "parent", label: "Parent link", kind: fieldChoice, options: parents,
+			help: "The link the VLAN rides on. Its .network file gains a VLAN= line."},
+		{key: "id", label: "VLAN id", kind: fieldText,
+			input: newFormText("10", ""),
+			help:  "The 802.1Q id, between 1 and 4094."},
+	}
+	f := configForm{fields: fields, kind: formVLAN, title: "New VLAN"}
+	f.focusActive()
+	return f
+}
+
+// newBridgeForm builds the editor for a new bridge: the device's name and the
+// links it gathers, ticked in a list.
+func newBridgeForm(members []string) configForm {
+	fields := []formField{
+		{key: "name", label: "Name", kind: fieldText,
+			input: newFormText("br0", ""),
+			help: "The bridge's name, and the name of the " +
+				"/etc/systemd/network unit written for it."},
+		{key: "members", label: "Members", kind: fieldMembers, options: members,
+			help: "The links to enslave; each one's .network file gains a " +
+				"Bridge= line. enter opens the list, space ticks a link."},
+	}
+	f := configForm{fields: fields, kind: formBridge, title: "New bridge"}
+	f.focusActive()
+	return f
+}
+
 // focusActive moves the text cursor to the active field.
 func (f *configForm) focusActive() {
 	for i := range f.fields {
@@ -180,6 +232,29 @@ func (f *configForm) prev() {
 // activeIsChoice reports whether the active field is a cycled choice.
 func (f configForm) activeIsChoice() bool {
 	return f.fields[f.active].kind == fieldChoice
+}
+
+// activeIsMembers reports whether the active field is a ticked set.
+func (f configForm) activeIsMembers() bool {
+	return f.fields[f.active].kind == fieldMembers
+}
+
+// activeChosen exposes the active members field's current set to its dialog.
+func (f configForm) activeChosen() []string { return f.fields[f.active].chosen }
+
+// setActiveChosen applies the set ticked in the members dialog.
+func (f *configForm) setActiveChosen(members []string) {
+	f.fields[f.active].chosen = members
+}
+
+// chosen returns the ticked set of a members field, by key.
+func (f configForm) chosen(key string) []string {
+	for _, field := range f.fields {
+		if field.key == key {
+			return field.chosen
+		}
+	}
+	return nil
 }
 
 // activeLabel, activeOptions and activeValue expose the active field to the
@@ -262,6 +337,8 @@ func (f configForm) view(t theme.Theme, width, height int) string {
 		switch {
 		case field.kind == fieldChoice:
 			value = renderChoice(t, field, i == f.active, valueWidth)
+		case field.kind == fieldMembers:
+			value = renderMembers(t, field, valueWidth)
 		case i == f.active:
 			field.input.Width = valueWidth - 2
 			value = field.input.View()
@@ -295,6 +372,16 @@ func renderChoice(t theme.Theme, field formField, active bool, width int) string
 		return t.Accent.Render("‹ ") + t.Base.Render(value) + t.Accent.Render(" ›")
 	}
 	return t.Base.Render("  " + value)
+}
+
+// renderMembers draws a set field: the ticked links, or an invitation to pick
+// some when none are ticked yet.
+func renderMembers(t theme.Theme, field formField, width int) string {
+	value := field.value()
+	if value == "" {
+		return t.Muted.Render(ui.Truncate("(none — enter to choose)", width))
+	}
+	return t.Base.Render(ui.Truncate(value, width))
 }
 
 // renderIdleText draws a text field that does not have focus.

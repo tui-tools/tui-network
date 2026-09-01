@@ -30,6 +30,17 @@ const (
 	modeHelp
 	modeDHCP
 	modeGateways
+	modeMembers
+)
+
+// pickerTarget says what an open picker's answer applies to. A picker normally
+// answers a choice field of the open form; the netdev flow opens one before
+// there is a form at all.
+type pickerTarget int
+
+const (
+	pickerFormField pickerTarget = iota
+	pickerNetdevKind
 )
 
 // inputTarget says what a text prompt's answer applies to.
@@ -99,8 +110,11 @@ type app struct {
 	input   ui.Input
 	picker  ui.Picker
 	form    configForm
+	// members is the ticked list of bridge members, open over the bridge form.
+	members memberPicker
 
-	inputFor inputTarget
+	inputFor  inputTarget
+	pickerFor pickerTarget
 
 	status     string
 	statusKind ui.StatusKind
@@ -428,6 +442,8 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleInput(msg)
 	case modePicker:
 		return a.handlePicker(msg)
+	case modeMembers:
+		return a.handleMembers(msg)
 	case modeForm:
 		return a.handleForm(msg)
 	case modeHelp:
@@ -535,18 +551,42 @@ func (a *app) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// handlePicker resolves the open picker, which today only serves the form's
-// choice fields.
+// handlePicker resolves the open picker: a choice field of the open form, or
+// the kind of virtual device to create.
 func (a *app) handlePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	a.picker.Update(msg)
 	if !a.picker.Done {
 		return a, nil
 	}
 	choice, accepted := a.picker.Selected(), a.picker.Accepted
-	a.picker = ui.Picker{}
+	target := a.pickerFor
+	a.picker, a.pickerFor = ui.Picker{}, pickerFormField
+
+	if target == pickerNetdevKind {
+		if !accepted {
+			a.mode = a.returnMode()
+			a.setStatus(ui.StatusInfo, "cancelled")
+			return a, nil
+		}
+		return a, a.openNetdevForm(choice)
+	}
 	if accepted {
 		a.form.setActiveValue(choice)
 	}
+	a.mode = modeForm
+	return a, nil
+}
+
+// handleMembers resolves the bridge's member list.
+func (a *app) handleMembers(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	a.members.update(msg)
+	if !a.members.done {
+		return a, nil
+	}
+	if a.members.accepted {
+		a.form.setActiveChosen(a.members.selected())
+	}
+	a.members = memberPicker{}
 	a.mode = modeForm
 	return a, nil
 }
@@ -579,7 +619,15 @@ func (a *app) handleForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// A choice field opens a picker: better than cycling a long list.
 			a.picker = ui.NewPicker(a.form.activeLabel(),
 				a.form.activeOptions(), a.form.activeValue())
+			a.pickerFor = pickerFormField
 			a.mode = modePicker
+			return a, nil
+		}
+		if a.form.activeIsMembers() {
+			// A set field opens its own list, where space ticks a link.
+			a.members = newMemberPicker(a.form.activeLabel(),
+				a.form.activeOptions(), a.form.activeChosen())
+			a.mode = modeMembers
 			return a, nil
 		}
 		return a, a.submitForm()
@@ -591,8 +639,11 @@ func (a *app) handleForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // DHCP options drop-in — diffs it against what is on disk and opens the
 // confirm dialog with both the diff and the commands that apply it.
 func (a *app) submitForm() tea.Cmd {
-	if a.form.kind == formDHCPOptions {
+	switch a.form.kind {
+	case formDHCPOptions:
 		return a.submitOptionsForm()
+	case formVLAN, formBridge:
+		return a.submitNetdevForm()
 	}
 	write, err := a.backend.BuildWriteConfig(a.form.spec())
 	if err != nil {
@@ -650,6 +701,10 @@ func (a *app) handleLinksKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.openDHCP()
 	case "w":
 		return a, a.openGateways()
+	case "V":
+		return a, a.promptNetdevKind()
+	case "X":
+		return a, a.removeNetdev()
 	case "R", "ctrl+r":
 		a.loading = true
 		return a, a.load()
@@ -1273,6 +1328,160 @@ func (a *app) openConfigForm() tea.Cmd {
 	a.form = newConfigForm(link.Name, networkd.SpecFromFile(file, link.Name), a.caps)
 	a.mode = modeForm
 	return nil
+}
+
+// promptNetdevKind opens the picker that starts the VLAN and bridge flow. The
+// kind comes first because it decides what the form even asks for: a VLAN has
+// one parent and an id, a bridge has a set of members.
+func (a *app) promptNetdevKind() tea.Cmd {
+	if !a.caps.SupportsNetdev {
+		a.setStatus(ui.StatusWarn, "this backend cannot create virtual devices")
+		return nil
+	}
+	if len(a.managedLinkNames()) == 0 {
+		a.setStatus(ui.StatusWarn,
+			"no link here is managed by systemd-networkd, so there is nothing to build on")
+		return nil
+	}
+	a.picker = ui.NewPicker("Create a virtual device", network.NetdevKinds, "")
+	a.pickerFor = pickerNetdevKind
+	a.mode = modePicker
+	return nil
+}
+
+// openNetdevForm opens the editor for the chosen kind.
+func (a *app) openNetdevForm(kind string) tea.Cmd {
+	links := a.managedLinkNames()
+	switch kind {
+	case network.NetdevVLAN:
+		a.form = newVLANForm(links)
+	case network.NetdevBridge:
+		a.form = newBridgeForm(links)
+	default:
+		a.setStatusf(ui.StatusWarn, "%q is not a device kind this tool creates", kind)
+		a.mode = a.returnMode()
+		return nil
+	}
+	a.mode = modeForm
+	return nil
+}
+
+// managedLinkNames are the links a virtual device may be built on: the ones
+// systemd-networkd manages. A link another manager owns is never enslaved, for
+// the same reason no other action touches it.
+func (a *app) managedLinkNames() []string {
+	var names []string
+	for _, link := range a.model.Links {
+		if link.Managed {
+			names = append(names, link.Name)
+		}
+	}
+	return names
+}
+
+// submitNetdevForm turns the open VLAN or bridge form into the previewed
+// multi-file write: the .netdev unit and every member's .network file, shown as
+// one diff and applied as one plan.
+func (a *app) submitNetdevForm() tea.Cmd {
+	spec := network.NetdevSpec{Name: a.form.get("name")}
+	if a.form.kind == formVLAN {
+		spec.Kind, spec.Parent = network.NetdevVLAN, a.form.get("parent")
+		id, err := networkd.ParseVLANID(a.form.get("id"))
+		if err != nil {
+			a.setStatus(ui.StatusWarn, err.Error())
+			return nil
+		}
+		spec.VLANID = id
+	} else {
+		spec.Kind, spec.Members = network.NetdevBridge, a.form.chosen("members")
+	}
+
+	write, err := a.backend.BuildCreateNetdev(a.model, spec)
+	if err != nil {
+		a.setStatus(ui.StatusError, err.Error())
+		return nil
+	}
+	title := "Create " + spec.Kind + " " + spec.Name
+	a.confirmNetdevPlan(title, write, reparentWarning(spec.MemberLinks(), spec.Name))
+	return nil
+}
+
+// removeNetdev previews taking the selected device away again: its .netdev unit
+// is deleted and every member line that named it is stripped, in one plan. Only
+// a unit tui-network wrote is offered — the backend refuses the rest.
+func (a *app) removeNetdev() tea.Cmd {
+	if !a.caps.SupportsNetdev {
+		a.setStatus(ui.StatusWarn, "this backend cannot remove virtual devices")
+		return nil
+	}
+	link, ok := a.currentLink()
+	if !ok {
+		a.setStatus(ui.StatusWarn, "no link selected")
+		return nil
+	}
+	write, err := a.backend.BuildRemoveNetdev(a.model, link.Name)
+	if err != nil {
+		a.setStatus(ui.StatusWarn, err.Error())
+		return nil
+	}
+	title := "Remove " + link.Name
+	a.confirmNetdevPlan(title, write,
+		releaseWarning(a.releasedLinks(write), link.Name))
+	return nil
+}
+
+// releasedLinks names the links a removal hands back to their own
+// configuration: the ones whose .network file the plan is rewriting.
+func (a *app) releasedLinks(write network.WritePlan) []string {
+	var names []string
+	for _, change := range write.Files {
+		if change.Remove {
+			continue
+		}
+		for _, file := range a.model.ConfigFiles {
+			if file.Path != change.Path {
+				continue
+			}
+			names = append(names, file.Links...)
+		}
+	}
+	return names
+}
+
+// confirmNetdevPlan opens the confirm dialog for a multi-file netdev plan: the
+// whole diff, the warning, and every command that applies it.
+func (a *app) confirmNetdevPlan(title string, write network.WritePlan, warning string) {
+	a.mode = modeConfirm
+	a.confirm = ui.Confirm{
+		Title:   title,
+		Body:    a.diffForDialog(write.Diff) + "\n" + a.wrapForDialog(warning),
+		Command: a.previewAll(write.Commands, false),
+		Danger:  true,
+		Payload: plan{title: title, commands: write.Commands},
+	}
+}
+
+// reparentWarning is the lockout warning a device that gathers links carries.
+// Enslaving a link hands its addresses to the new device, and a session running
+// over that link goes with them — which is the one thing an operator working
+// over ssh has to be told before agreeing.
+func reparentWarning(members []string, device string) string {
+	links := strings.Join(members, ", ")
+	return "This re-parents " + links + ": on the next `networkctl reload` " +
+		"systemd-networkd moves the link's configuration onto " + device +
+		". If you are connected over " + links + ", you will lose the session."
+}
+
+// releaseWarning is the same warning for the removal: the links the device
+// gathered go back to their own configuration, which is just as much a
+// re-parenting as the creation was.
+func releaseWarning(members []string, device string) string {
+	body := "This removes " + device + " and releases the links it carries"
+	if len(members) > 0 {
+		body += ": on the next `networkctl reload` " + strings.Join(members, ", ") +
+			" returns to its own configuration"
+	}
+	return body + ". If you are connected over one of them, you will lose the session."
 }
 
 // buildAndConfirm runs a command builder and opens the confirm dialog, or

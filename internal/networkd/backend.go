@@ -14,9 +14,10 @@
 //	ip           the kernel routing table, in JSON
 //	journalctl   what networkd said about a link
 //
-// A fifth, `install`, copies a staged .network file into place; it is the only
-// way this tool writes to /etc, and the copy is previewed like every other
-// change.
+// Two more touch /etc, and only /etc/systemd/network: `install` copies a staged
+// .network or .netdev file into place, and `rm` deletes a .netdev unit this
+// tool itself wrote. They are the only way anything here writes, and both are
+// previewed like every other change.
 package networkd
 
 import (
@@ -44,6 +45,7 @@ var searchPaths = map[string][]string{
 	"journalctl": {"/usr/bin/journalctl", "/bin/journalctl"},
 	"install":    {"/usr/bin/install", "/bin/install"},
 	"cat":        {"/usr/bin/cat", "/bin/cat"},
+	"rm":         {"/usr/bin/rm", "/bin/rm"},
 }
 
 // installHint is appended to the "not found" error.
@@ -65,6 +67,9 @@ type Real struct {
 	ip         *runner.Runner
 	journalctl *runner.Runner
 	install    *runner.Runner
+	// rm deletes a .netdev unit the tool itself wrote. It is the only removal
+	// the tool builds, and it never points at a .network file.
+	rm *runner.Runner
 	// cat is the escalated fallback for reading a .network file an
 	// unprivileged process cannot open. See readConfigFile.
 	cat *runner.Runner
@@ -99,6 +104,7 @@ func NewReal(sudoPrefix []string, caps compat.Caps) (*Real, error) {
 		{"ip", &real.ip, &unprivileged},
 		{"journalctl", &real.journalctl, &unprivileged},
 		{"install", &real.install, nil},
+		{"rm", &real.rm, nil},
 	} {
 		r, err := runner.New(runner.Options{
 			Bin:             spec.bin,
@@ -166,6 +172,8 @@ func (r *Real) runnerFor(cmd network.Command) *runner.Runner {
 		return r.journalctl
 	case "install":
 		return r.install
+	case "rm":
+		return r.rm
 	default:
 		return nil
 	}
@@ -213,6 +221,7 @@ func (r *Real) Load(ctx context.Context) (network.Model, error) {
 	}
 	r.loadDNS(ctx, &model)
 	model.ConfigFiles = r.loadConfigFiles(ctx, model.Links)
+	model.NetdevFiles = loadNetdevFiles(ctx, r.cat)
 	r.markUnmanaged(&model)
 	return model, nil
 }
@@ -551,6 +560,79 @@ func (r *Real) loadConfigFiles(ctx context.Context, links []network.Link) []netw
 // tests drive.
 func LoadConfigFiles(links []network.Link) []network.ConfigFile {
 	return loadConfigFiles(context.Background(), nil, links)
+}
+
+// loadNetdevFiles reads the .netdev units from systemd's search path, the same
+// way and from the same directories as the .network files: a unit an earlier
+// directory declares wins, and one an unprivileged read cannot open falls back
+// to the escalated read.
+func loadNetdevFiles(ctx context.Context, cat *runner.Runner) []network.NetdevFile {
+	var units []network.NetdevFile
+	seen := map[string]bool{}
+	for _, dir := range ConfigDirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), NetdevSuffix) {
+				continue
+			}
+			if seen[entry.Name()] {
+				continue
+			}
+			seen[entry.Name()] = true
+			path := filepath.Join(dir, entry.Name())
+			raw, err := readConfigFile(ctx, cat, path)
+			if err != nil {
+				continue
+			}
+			units = append(units, ParseNetdevFile(path, raw))
+		}
+	}
+	sort.Slice(units, func(i, j int) bool { return units[i].Path < units[j].Path })
+	return units
+}
+
+// LoadNetdevFiles reads the .netdev units with no escalation available. It is
+// the read a root process needs, and the one the tests drive.
+func LoadNetdevFiles() []network.NetdevFile {
+	return loadNetdevFiles(context.Background(), nil)
+}
+
+// fileIO gives the netdev planner the real machine: it reads what is on disk
+// and stages into the same private temporary directory every other file change
+// uses.
+func (r *Real) fileIO() FileIO {
+	return FileIO{Read: readIfExists, Stage: stageFile}
+}
+
+// readIfExists reads a file, treating "not there" as empty rather than as an
+// error — a plan that creates a file has nothing to read, and that is normal.
+func readIfExists(path string) (string, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // the path is validated against ConfigDir before any command is built
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(raw), nil
+}
+
+// BuildCreateNetdev stages the .netdev unit and every member .network file, and
+// returns the one diff and the install-per-file-then-reload plan that applies
+// them.
+func (r *Real) BuildCreateNetdev(model network.Model,
+	spec network.NetdevSpec) (network.WritePlan, error) {
+	return BuildCreateNetdev(model, spec, r.fileIO())
+}
+
+// BuildRemoveNetdev stages the member files without the device's line and pairs
+// them with the unit's removal.
+func (r *Real) BuildRemoveNetdev(model network.Model,
+	name string) (network.WritePlan, error) {
+	return BuildRemoveNetdev(model, name, r.fileIO())
 }
 
 // loadConfigFiles is the shared implementation of both.

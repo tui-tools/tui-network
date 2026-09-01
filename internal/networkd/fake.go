@@ -217,6 +217,8 @@ func (f *Fake) apply(cmd network.Command) (string, error) {
 		})
 	case "install -m", "install -D":
 		return f.installFile(argv)
+	case "rm -f":
+		return f.removeFile(argv)
 	case "ip route", "ip -6":
 		return f.replaceDefault(argv)
 	}
@@ -368,6 +370,9 @@ func (f *Fake) installFile(argv []string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("install: nothing staged for %s", destination)
 	}
+	if strings.HasSuffix(destination, NetdevSuffix) {
+		return f.installNetdev(destination, content)
+	}
 	file := ParseNetworkFile(destination, content)
 	for i := range f.model.ConfigFiles {
 		if f.model.ConfigFiles[i].Path == destination {
@@ -378,6 +383,94 @@ func (f *Fake) installFile(argv []string) (string, error) {
 	}
 	f.model.ConfigFiles = append(f.model.ConfigFiles, file)
 	return "", nil
+}
+
+// installNetdev applies a staged .netdev unit to the sample machine: the unit
+// is recorded, and the device it declares shows up as a link — which is what
+// `networkctl reload` really does, and what makes removing it from the demo's
+// links screen work the way it will on a real machine.
+func (f *Fake) installNetdev(destination, content string) (string, error) {
+	unit := ParseNetdevFile(destination, content)
+	for i := range f.model.NetdevFiles {
+		if f.model.NetdevFiles[i].Path == destination {
+			f.model.NetdevFiles[i] = unit
+			return "", nil
+		}
+	}
+	f.model.NetdevFiles = append(f.model.NetdevFiles, unit)
+	if _, exists := f.model.Link(unit.Name); !exists && unit.Name != "" {
+		f.model.Links = append(f.model.Links, network.Link{
+			Index: len(f.model.Links) + 1, Name: unit.Name, Type: "ether",
+			Kind: unit.Kind, Setup: network.SetupConfigured,
+			Operational: "carrier", Carrier: "carrier", MTU: 1500, Managed: true,
+		})
+	}
+	return "", nil
+}
+
+// removeFile applies an `rm -f -- <path>` to the sample machine: the unit goes,
+// and so does the device it declared.
+func (f *Fake) removeFile(argv []string) (string, error) {
+	path := argv[len(argv)-1]
+	var units []network.NetdevFile
+	removed := ""
+	for _, unit := range f.model.NetdevFiles {
+		if unit.Path == path {
+			removed = unit.Name
+			continue
+		}
+		units = append(units, unit)
+	}
+	f.model.NetdevFiles = units
+	if removed == "" {
+		return "", nil
+	}
+	var links []network.Link
+	for _, link := range f.model.Links {
+		if link.Name == removed {
+			continue
+		}
+		links = append(links, link)
+	}
+	f.model.Links = links
+	return "", nil
+}
+
+// fileIO gives the netdev planner the sample machine: it reads the in-memory
+// files and "stages" into the same map the install hook reads back, so --demo
+// builds exactly the plan a real run builds and writes nothing at all.
+func (f *Fake) fileIO() FileIO {
+	return FileIO{
+		Read: func(path string) (string, error) {
+			for _, file := range f.model.ConfigFiles {
+				if file.Path == path {
+					return file.Raw, nil
+				}
+			}
+			for _, unit := range f.model.NetdevFiles {
+				if unit.Path == path {
+					return unit.Raw, nil
+				}
+			}
+			return "", nil
+		},
+		Stage: func(path, content string) (string, error) {
+			f.staged[path] = content
+			return "/tmp/tui-network/" + baseName(path), nil
+		},
+	}
+}
+
+// BuildCreateNetdev builds the same multi-file plan the real backend builds.
+func (f *Fake) BuildCreateNetdev(model network.Model,
+	spec network.NetdevSpec) (network.WritePlan, error) {
+	return BuildCreateNetdev(model, spec, f.fileIO())
+}
+
+// BuildRemoveNetdev builds the same removal plan the real backend builds.
+func (f *Fake) BuildRemoveNetdev(model network.Model,
+	name string) (network.WritePlan, error) {
+	return BuildRemoveNetdev(model, name, f.fileIO())
 }
 
 // BuildLinkAction builds a link verb.
