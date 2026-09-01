@@ -50,6 +50,7 @@ var capabilities = network.Capabilities{
 	SupportsFlushCaches: true,
 	SupportsRuntimeDNS:  true,
 	SupportsFileEdit:    true,
+	SupportsNetdev:      true,
 	ConfigDir:           ConfigDir,
 }
 
@@ -182,8 +183,24 @@ func BuildInstallFile(tempPath, destination string) (network.Command, error) {
 	}, nil
 }
 
+// The unit suffixes tui-network writes. A `.network` file configures a link;
+// a `.netdev` file declares a virtual device (a VLAN, a bridge). Nothing else
+// in /etc/systemd/network is this tool's business, and the write path refuses
+// every other name.
+const (
+	NetworkSuffix = ".network"
+	NetdevSuffix  = ".netdev"
+)
+
+// configSuffixes is that list, in the order the error message names them.
+var configSuffixes = []string{NetworkSuffix, NetdevSuffix}
+
 // checkConfigPath refuses to write anywhere but the networkd configuration
 // directory, and refuses a name systemd would not read.
+//
+// The name is checked as a name, not as a path: it may not contain a separator
+// at all, so `..` never gets a chance to mean anything, and the destination is
+// always a file directly in ConfigDir.
 func checkConfigPath(path string) error {
 	if !strings.HasPrefix(path, ConfigDir+"/") {
 		return fmt.Errorf("networkd: refusing to write outside %s", ConfigDir)
@@ -192,10 +209,39 @@ func checkConfigPath(path string) error {
 	if strings.ContainsAny(name, "/ \t") || name == "" {
 		return fmt.Errorf("networkd: %q is not a file name", name)
 	}
-	if !strings.HasSuffix(name, ".network") {
-		return fmt.Errorf("networkd: a networkd configuration file must end in .network")
+	for _, suffix := range configSuffixes {
+		// A file called ".network" is a suffix and nothing else: it has no
+		// name, and systemd would not read it either.
+		if strings.HasSuffix(name, suffix) && name != suffix {
+			return nil
+		}
 	}
-	return nil
+	return fmt.Errorf("networkd: a networkd configuration file must end in %s",
+		strings.Join(configSuffixes, " or "))
+}
+
+// BuildRemoveNetdevFile deletes a .netdev unit. It is the only removal this
+// tool builds, and it is narrower than the write path on purpose: a `.network`
+// file is never deleted, only rewritten, so a mistake here cannot unconfigure a
+// link.
+//
+// `-f` makes it idempotent — the plan is confirmed against the machine as it
+// was read, and a unit somebody else already deleted is not a reason to leave
+// the rest of the plan half-applied.
+func BuildRemoveNetdevFile(path string) (network.Command, error) {
+	if err := checkConfigPath(path); err != nil {
+		return network.Command{}, err
+	}
+	if !strings.HasSuffix(path, NetdevSuffix) {
+		return network.Command{}, fmt.Errorf(
+			"networkd: only a %s unit is removed, not %s", NetdevSuffix, path)
+	}
+	return network.Command{
+		// `--` ends the option list, so a name is never read as a flag.
+		Argv:        []string{"rm", "-f", "--", path},
+		Description: "Remove " + path,
+		Destructive: true,
+	}, nil
 }
 
 // FileName is the file a link's configuration is written to when the link has
@@ -257,8 +303,7 @@ func RenderFile(spec network.FileSpec, existing string) (string, error) {
 
 	var b strings.Builder
 	if strings.TrimSpace(existing) == "" {
-		b.WriteString("# Written by tui-network. Edit it here or by hand;\n")
-		b.WriteString("# systemd-networkd re-reads it on `networkctl reload`.\n\n")
+		b.WriteString(fileHeader)
 	}
 	b.WriteString("[Match]\n")
 	fmt.Fprintf(&b, "Name=%s\n", spec.MatchName)

@@ -470,6 +470,86 @@ func (c ConfigFile) All(section, key string) []string {
 	return out
 }
 
+// The virtual device kinds tui-network can create. They are the two a router
+// actually needs: a VLAN rides on one parent link, a bridge gathers several.
+const (
+	NetdevVLAN   = "vlan"
+	NetdevBridge = "bridge"
+)
+
+// NetdevKinds are those kinds in the order the picker offers them.
+var NetdevKinds = []string{NetdevVLAN, NetdevBridge}
+
+// The 802.1Q VLAN id range. Zero means "no VLAN" and 4095 is reserved, so
+// neither is a device an operator can ask for.
+const (
+	MinVLANID = 1
+	MaxVLANID = 4094
+)
+
+// NetdevFile is a systemd .netdev unit as it is on disk: the raw text, the
+// settings parsed out of it, and what the [NetDev] section declares.
+type NetdevFile struct {
+	// Path is the absolute path of the file.
+	Path string
+	// Raw is the file's text.
+	Raw string
+	// Settings are the parsed key/value lines, in file order.
+	Settings []Setting
+	// Name is the `[NetDev] Name=` value, which is the device's name.
+	Name string
+	// Kind is the `[NetDev] Kind=` value, lower-cased ("vlan", "bridge").
+	Kind string
+	// Owned reports that tui-network wrote this file. Only an owned unit may
+	// be removed from the TUI: a unit somebody else wrote is theirs.
+	Owned bool
+}
+
+// NetdevSpec describes a virtual device the user asked for. The backend turns
+// it into the .netdev unit and the member `.network` lines that make the device
+// real, and refuses a spec that names something the machine cannot give it.
+type NetdevSpec struct {
+	// Kind is NetdevVLAN or NetdevBridge.
+	Kind string
+	// Name is the device's name, and the name the .netdev unit is written as.
+	Name string
+	// Parent is the link a VLAN rides on. It is unused by a bridge.
+	Parent string
+	// VLANID is the 802.1Q id, between MinVLANID and MaxVLANID.
+	VLANID int
+	// Members are the links a bridge gathers. They are unused by a VLAN.
+	Members []string
+}
+
+// MemberLinks are the links a spec touches beyond the new device itself: a
+// VLAN's parent, or a bridge's members. They are the links that get a member
+// line written into their .network file — and the links whose session a
+// re-parenting can drop.
+func (s NetdevSpec) MemberLinks() []string {
+	if s.Kind == NetdevVLAN {
+		if s.Parent == "" {
+			return nil
+		}
+		return []string{s.Parent}
+	}
+	return s.Members
+}
+
+// FileChange is one file of a multi-file plan: what it holds today, what it
+// will hold, and whether it is being removed outright. A VLAN or a bridge is
+// always more than one file — the unit plus every member's .network — so the
+// dialog shows them as one diff and applies them as one confirmed plan.
+type FileChange struct {
+	// Path is the destination file.
+	Path string
+	// Before is what the destination holds today, empty when it does not exist.
+	Before string
+	// Content is the text that will be installed, empty for a removal.
+	Content string
+	// Remove reports that the file is deleted rather than written.
+	Remove bool
+}
+
 // Model is the whole picture tui-network renders.
 type Model struct {
 	// Backend names the implementation that produced this model.
@@ -491,6 +571,19 @@ type Model struct {
 	GlobalSearchDomains []string
 	// ConfigFiles are the .network files found in the search paths.
 	ConfigFiles []ConfigFile
+	// NetdevFiles are the .netdev units found in the same search paths: the
+	// virtual devices this machine declares.
+	NetdevFiles []NetdevFile
+}
+
+// Netdev returns the .netdev unit that declares a device by name.
+func (m Model) Netdev(name string) (NetdevFile, bool) {
+	for _, unit := range m.NetdevFiles {
+		if unit.Name == name {
+			return unit, true
+		}
+	}
+	return NetdevFile{}, false
 }
 
 // Link returns the link with the given name.
@@ -567,6 +660,9 @@ type Capabilities struct {
 	SupportsRuntimeDNS bool
 	// SupportsFileEdit reports whether the guided .network editor is offered.
 	SupportsFileEdit bool
+	// SupportsNetdev reports whether VLANs and bridges can be created and
+	// removed as .netdev units.
+	SupportsNetdev bool
 	// ConfigDir is where a written .network file lands.
 	ConfigDir string
 }
@@ -613,6 +709,21 @@ type Backend interface {
 	// until those commands are run.
 	BuildWriteConfig(spec FileSpec) (WritePlan, error)
 
+	// BuildCreateNetdev renders the .netdev unit for a VLAN or a bridge and
+	// the member lines that attach it to the links it rides on, and returns
+	// them as one multi-file plan: one diff over every file, then an install
+	// per file and a single reload.
+	//
+	// The model is a parameter rather than backend state because every refusal
+	// this builder makes is a question about the machine as it was last read —
+	// does this name already exist, is the parent a link networkd manages,
+	// which .network file carries a member — and the UI is holding that read.
+	BuildCreateNetdev(model Model, spec NetdevSpec) (WritePlan, error)
+	// BuildRemoveNetdev is the mirror image: it deletes a .netdev unit
+	// tui-network itself wrote and strips the member lines that referenced it,
+	// again as one plan. A unit the tool does not own is refused.
+	BuildRemoveNetdev(model Model, name string) (WritePlan, error)
+
 	// Egress resolves how the kernel would reach a gateway, with a read-only
 	// `ip route get`. It is the optional reachability probe the Gateways
 	// screen runs: a route lookup, never a packet.
@@ -642,6 +753,11 @@ type WritePlan struct {
 	Diff string
 	// TempPath is the staging file the install command copies from.
 	TempPath string
+	// Files are every file the plan touches, in the order the commands apply
+	// them. A single-file edit leaves it empty and carries Path and Content
+	// alone; a VLAN or a bridge fills it, and Diff is then the diff of all of
+	// them, one after another, so the dialog shows the whole change at once.
+	Files []FileChange
 	// Commands are run in order, and are what the confirm dialog shows.
 	Commands []Command
 }

@@ -42,6 +42,11 @@ type checkReport struct {
 	Managed     int `json:"managed"`
 	Routes      int `json:"routes"`
 	ConfigFiles int `json:"configFiles"`
+	// Netdevs is how many .netdev units the machine declares, and Owned how
+	// many of those tui-network wrote — the ones the removal key is offered
+	// for.
+	Netdevs int `json:"netdevs"`
+	Owned   int `json:"ownedNetdevs"`
 	// Compat is what the backend version probe found. It is reported rather
 	// than asserted: an untested version is a fact about the machine, not a
 	// failure of the read path.
@@ -143,6 +148,7 @@ func runCheck(backend network.Backend, backendCompat compat.Result,
 		Links:           len(model.Links),
 		Routes:          len(model.Routes),
 		ConfigFiles:     len(model.ConfigFiles),
+		Netdevs:         len(model.NetdevFiles),
 		Compat:          backendCompat,
 		Model:           model,
 		Gateways:        gatewaysCheck(model),
@@ -151,6 +157,11 @@ func runCheck(backend network.Backend, backendCompat compat.Result,
 	for _, link := range model.Links {
 		if link.Managed {
 			report.Managed++
+		}
+	}
+	for _, unit := range model.NetdevFiles {
+		if unit.Owned {
+			report.Owned++
 		}
 	}
 

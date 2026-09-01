@@ -24,10 +24,19 @@ const Context = 2
 
 // Unified renders a unified diff between two versions of a file. It returns the
 // empty string when nothing would change.
+//
+// A file that does not exist yet diffs against /dev/null, and a file being
+// deleted diffs into /dev/null, so a plan that creates one unit and removes
+// another reads as one diff with the usual conventions on both sides.
 func Unified(path, before, after string) string {
 	if before == after {
 		return ""
 	}
+	return unified(labelFor(path, before), labelFor(path, after), before, after)
+}
+
+// unified renders the diff with both sides named explicitly.
+func unified(oldLabel, newLabel, before, after string) string {
 	oldLines, newLines := splitLines(before), splitLines(after)
 	ops := diffOps(oldLines, newLines)
 	hunks := hunksOf(ops)
@@ -36,8 +45,8 @@ func Unified(path, before, after string) string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "--- %s\n", labelFor(path, before))
-	fmt.Fprintf(&b, "+++ %s\n", path)
+	fmt.Fprintf(&b, "--- %s\n", oldLabel)
+	fmt.Fprintf(&b, "+++ %s\n", newLabel)
 	for _, hunk := range hunks {
 		oldCount, newCount := 0, 0
 		for _, op := range hunk.ops {
@@ -145,10 +154,11 @@ func hunksOf(ops []op) []hunk {
 	return hunks
 }
 
-// labelFor names the left side of the diff: the file, or /dev/null when it does
-// not exist yet.
-func labelFor(path, before string) string {
-	if before == "" {
+// labelFor names one side of the diff: the file, or /dev/null when that side
+// holds nothing — a file being created on the left, one being deleted on the
+// right.
+func labelFor(path, text string) string {
+	if text == "" {
 		return "/dev/null"
 	}
 	return path
