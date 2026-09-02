@@ -46,7 +46,9 @@ func openNetdevPicker(t *testing.T, a *app, kind string) {
 		if a.picker.Cursor >= len(a.picker.Options)-1 {
 			t.Fatalf("the kind picker does not offer %q", kind)
 		}
-		drain(t, a, press(a, "j"))
+		// Since tui-kit v0.3.0 the picker filters on printable keys, so the
+		// cursor moves with the arrows rather than with j/k.
+		drain(t, a, press(a, "down"))
 	}
 	drain(t, a, press(a, "enter"))
 	if a.mode != modeForm {
