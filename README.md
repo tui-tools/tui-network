@@ -127,7 +127,7 @@ Upgrades then arrive with the rest of your system updates.
 ### Any distribution, static binary
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-network/releases/download/v0.2.0/tui-network_0.2.0_linux_amd64.tar.gz | tar -xz tui-network
+curl -fsSL https://github.com/tui-tools/tui-network/releases/download/v0.3.0/tui-network_0.3.0_linux_amd64.tar.gz | tar -xz tui-network
 sudo install -m0755 tui-network /usr/local/bin/tui-network
 ```
 
@@ -186,6 +186,8 @@ tui-network --demo
 `--demo` runs against a sample machine: a loopback, a wired link networkd
 configured over DHCP, and a wireless link NetworkManager owns. Every key works,
 every command is built and previewed for real, and nothing touches your system.
+Its DHCP screen shows a sample dnsmasq; `--demo-dhcp networkd` swaps in a
+sample router whose DHCP is `systemd-networkd`'s own.
 
 ## Every change is previewed
 
@@ -211,8 +213,8 @@ about it in the journal.
 ## The router's DHCP and DNS
 
 `D` opens the DHCP screen: the piece a router profile needs on top of links,
-addresses and routes. It reads whichever DHCP server the machine runs — dnsmasq
-or ISC Kea, detected — and shows the server, the pools it hands out, the
+addresses and routes. It reads whichever DHCP server the machine runs — dnsmasq,
+ISC Kea, or `systemd-networkd`'s own, detected — and shows the server, the pools it hands out, the
 reservations that pin a host to an address, and the leases it has granted, each
 with its MAC, address, hostname and how long it has left. dnsmasq serves DNS and
 DHCP from one process, so the screen says so: on such a router the resolver view
@@ -240,6 +242,47 @@ router wants and stays right if it is ever renumbered. The change is applied
 with a restart, because dnsmasq does not re-read configuration files on
 SIGHUP.
 
+### systemd-networkd's own DHCP server
+
+A router does not have to install a DHCP server at all: `systemd-networkd` has
+one, turned on by `DHCPServer=yes` in the LAN's `.network` unit and configured
+by that unit's `[DHCPServer]` section. That is what the Omarchy Router profile
+runs, and `tui-network` drives it the same way it drives `dnsmasq`.
+
+The screen derives the pool the way `systemd` does: from the unit's `Address=`
+and its `PoolOffset=`/`PoolSize=`, where a zero offset means the first address
+after the subnet address and a zero size means the rest of the subnet up to the
+broadcast address. Alongside it are the default lease time, what the leases
+advertise — DNS, NTP, the router and the domain — the `[DHCPServerStaticLease]`
+reservations, and the leases the server has actually offered, read from
+`networkctl status`, which is where `systemd-networkd` publishes them (the
+JSON output does not carry them; the list arrived in `systemd` 246).
+
+All four changes are offered. Each one is rendered into a single drop-in of the
+tool's own, `/etc/systemd/network/<unit>.network.d/50-tui-network-dhcp.conf`,
+shown as a unified diff, installed with `install -D -m 644` and applied with
+`networkctl reload`. The unit itself — the file `omarchy-router-nics` writes —
+is never rewritten.
+
+Two `systemd` details show through, because they change what the tool can
+honestly offer:
+
+- A drop-in's list assignment *adds* to the unit's, so the drop-in clears each
+  list before it sets it (`DNS=` then `DNS=…`). That is why the options form
+  opens on the values in effect across the unit and the drop-in rather than on
+  the drop-in alone: it rewrites the whole answer.
+- A `[DHCPServerStaticLease]` section is additive and cannot be taken back by a
+  drop-in. A reservation `tui-network` wrote is removed by `x`; one the unit
+  itself declares is refused, with the file to edit named, instead of writing a
+  drop-in that would do nothing.
+
+`[DHCPServer]` has no key for the domain — `EmitDomains=` belongs to
+`[IPv6SendRA]`, which is router advertisement rather than DHCP — so the domain
+is sent as the raw option it is, `SendOption=15:string:<domain>`.
+
+`tui-network --demo --demo-dhcp networkd` drives a sample router of this shape,
+with the same units, the same drop-in and the same previews as the real thing.
+
 ## The router's gateways and failover
 
 `w` opens the Gateways screen, for a router with more than one uplink. It reads
@@ -266,6 +309,7 @@ uplink another manager owns gets the live switch only, and the screen says why.
 ```sh
 tui-network                       # drive the real network
 tui-network --demo                # sample machine, no privileges needed
+tui-network --demo --demo-dhcp networkd   # …whose DHCP is networkd's own
 tui-network --check               # read the network, print JSON, exit
 tui-network --report              # print what a bug report needs, exit
 tui-network --theme ~/mytheme/colors.toml
@@ -432,7 +476,7 @@ removed — the tool only takes back what it put there, which it knows from the
 | `X` | Remove the selected VLAN or bridge, if `tui-network` wrote its unit |
 | `D` | The router's DHCP screen: pools, reservations and leases |
 | `a` / `x` / `p` | On the DHCP screen: add / remove a reservation, adjust a pool's range |
-| `o` | On the DHCP screen: advertised DNS, gateway, domain and upstream forwarders |
+| `o` | On the DHCP screen: advertised options, upstream forwarders (dnsmasq) or lease time (networkd) |
 | `w` | The Gateways screen: the uplinks and the default route |
 | `s` / `x` | On the Gateways screen: set the default / fail over to a standby |
 | `P` | On the Gateways screen: make an uplink's priority persistent |
@@ -485,10 +529,15 @@ reconfigure or fight with whoever does own it.
   line in every member's `.network` file, reviewed as one unified diff over all
   of them, installed file by file and applied with a single `networkctl
   reload` — and remove one again the same way, if `tui-network` wrote it.
-- Read the router's DHCP server, dnsmasq or ISC Kea, detected: its pools,
-  reservations and leases, from the lease file and the configuration.
+- Read the router's DHCP server — dnsmasq, ISC Kea, or `systemd-networkd`'s own
+  `[DHCPServer]` — detected: its pools, reservations and leases, from the lease
+  file, the configuration, or `networkctl status`.
 - On dnsmasq, add or remove a reservation and adjust a pool's range, each
   reviewed as a unified diff and applied with a `systemctl reload` or `restart`.
+- On `systemd-networkd`, do the same through one drop-in per unit: the pool as
+  `PoolOffset=`/`PoolSize=` computed from the LAN's subnet, the static leases as
+  `[DHCPServerStaticLease]` sections, and the advertised DNS, NTP, router,
+  domain and lease time — installed and applied with `networkctl reload`.
 - On dnsmasq, set what DHCP advertises — DNS servers (option 6), gateway
   (option 3) and domain — and the upstream `server=` forwarders, through a
   guided form that rewrites only a drop-in of the tool's own.
@@ -517,7 +566,12 @@ reconfigure or fight with whoever does own it.
 - **No live counters**, no traffic graph, no `ping`, no `lldp` view.
 - Routes are read-only: there is no key that adds or deletes one.
 - **DHCP on Kea is read-only.** Its pools, reservations and leases are shown; the
-  add, remove and pool-range keys are offered only on dnsmasq.
+  add, remove and pool-range keys are offered on dnsmasq and on
+  `systemd-networkd`, not on Kea.
+- **A networkd static lease cannot be removed from the unit.** A drop-in adds
+  `[DHCPServerStaticLease]` sections and cannot take one back, so only the ones
+  `tui-network` wrote are removable, and a networkd lease has no hostname:
+  `[DHCPServerStaticLease]` has no key for one.
 - **No DHCP server lifecycle.** The DHCP screen edits reservations and pool
   ranges; it does not enable, start or install a server, or create a pool from
   nothing.
@@ -540,7 +594,7 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | Version read with | `networkctl --version` |
 | Minimum | 245 |
 | Tested | `255`, `257`, `259`, `261` |
-| Version-gated features | `json-status` (since 249), `link-up-down` (since 249) |
+| Version-gated features | `json-status` (since 249), `link-up-down` (since 249), `dhcp-server-leases` (since 246), `dhcp-static-lease` (since 249) |
 
 | Versions | What changes |
 | --- | --- |
@@ -549,6 +603,11 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | `>=245` | no released systemd emits JSON from `resolvectl status`, so DNS servers and search domains are read from the text output of `resolvectl dns` and `resolvectl domain` |
 | `>=245` | the Gateways screen (w) reads the default routes from `ip -j route` (multipath expanded per next hop) and reachability from `ip -j route get`; the default-route switch and failover run `ip route replace` live, and a managed link also gets a persistent `[Route]` drop-in reloaded with `networkctl` |
 | `>=245` | VLANs and bridges (V) are written as a .netdev unit under /etc/systemd/network plus a VLAN= or Bridge= line in each member's .network file, previewed as one multi-file diff, installed with `install -m 644` and applied with a single `networkctl reload`; X removes a unit tui-network wrote with `rm -f` |
+| `>=245` | the DHCP screen (D) also reads systemd-networkd's own DHCP server, the one a `[DHCPServer]` section in a .network unit turns on: the pool derived from `Address=` with `PoolOffset=`/`PoolSize=`, the lease time, the advertised DNS, NTP, router and domain, and the static leases |
+| `>=245` | a change to that server is written to a drop-in of the tool's own (`<unit>.network.d/50-tui-network-dhcp.conf`), rendered whole and applied with `networkctl reload`; the unit itself is never rewritten, and each advertised list is cleared before it is set because a drop-in's `DNS=` adds to the unit's |
+| `>=245` | `[DHCPServer]` has no key for the domain (`EmitDomains=` belongs to `[IPv6SendRA]`), so tui-network emits it as the raw option it is, `SendOption=15:string:<domain>` |
+| `<246` | `networkctl status` does not print the "Offered DHCP leases" list (systemd 246 added it), so a networkd DHCP server shows its pool and its static leases but no live ones |
+| `<249` | `[DHCPServerStaticLease]` does not exist (systemd 249 added it), so a static lease written on an older systemd is read back by the screen but ignored by the server |
 
 ### dnsmasq
 

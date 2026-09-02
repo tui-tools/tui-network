@@ -3,7 +3,7 @@
   "name": "tui-network",
   "binary": "tui-network",
   "tagline": "Links, addresses, routes and DNS, with every change previewed before it runs",
-  "description": "A terminal UI for the machine's network. It shows the links you have — state, type, addresses, gateway, MAC, MTU and driver — with the routing table, what systemd-resolved uses for DNS, and the `.network` file behind each link.\n\nOpen a link and you get the whole picture in one screen: its addresses and where each came from, its routes, DNS servers and search domains, DHCP lease, the `.network` file that configures it, and what systemd-networkd said about it in the journal.\n\nChanges are previewed. Bringing a link up or down, reconfiguring it, renewing a lease, setting DNS at runtime, and editing a `.network` file — a unified diff, then an install and a reload — all go through a confirm dialog carrying the exact command line. A link systemd-networkd does not manage, because NetworkManager owns it, is shown read-only with the reason.\n\nThe `D` screen reads the router's dnsmasq or Kea server (pools, leases, reservations), `w` switches the default route or fails over, and `V` builds a VLAN or a bridge as a `.netdev` unit with its member lines.\n\nRun `tui-network --demo` to drive a sample machine: every key works, every command is previewed for real, and nothing touches your system.",
+  "description": "A terminal UI for the machine's network. It shows the links you have — state, type, addresses, gateway, MAC, MTU and driver — with the routing table, what systemd-resolved uses for DNS, and the `.network` file behind each link.\n\nOpen a link and you get the whole picture in one screen: its addresses and where each came from, its routes, DNS servers and search domains, DHCP lease, the `.network` file that configures it, and what systemd-networkd said about it in the journal.\n\nChanges are previewed. Bringing a link up or down, reconfiguring it, renewing a lease, setting DNS at runtime, and editing a `.network` file — a unified diff, then an install and a reload — all go through a confirm dialog carrying the exact command line. A link systemd-networkd does not manage is shown read-only with the reason.\n\nThe `D` screen reads the router's DHCP server — dnsmasq, Kea or networkd's own `[DHCPServer]` — with its pools, leases and reservations, `w` switches the default route or fails over, and `V` builds a VLAN or a bridge as a `.netdev` unit.\n\nRun `tui-network --demo` to drive a sample machine: every key works, every command is previewed for real, and nothing touches your system.",
   "category": "network",
   "homepage": "https://github.com/tui-tools/tui-network",
   "repo": "https://github.com/tui-tools/tui-network",
@@ -79,15 +79,15 @@
     },
     {
       "key": "a / x",
-      "action": "On the DHCP screen: add or remove a reservation (dnsmasq)"
+      "action": "On the DHCP screen: add or remove a reservation (dnsmasq, systemd-networkd)"
     },
     {
       "key": "p",
-      "action": "On the DHCP screen: adjust a pool's range (dnsmasq)"
+      "action": "On the DHCP screen: adjust a pool's range (dnsmasq, systemd-networkd)"
     },
     {
       "key": "o",
-      "action": "Set advertised DHCP options (DNS, gateway, domain) and upstream forwarders (dnsmasq)"
+      "action": "Set advertised DHCP options and, on systemd-networkd, the lease time"
     },
     {
       "key": "w",
@@ -148,6 +148,14 @@
         {
           "name": "link-up-down",
           "since": "249"
+        },
+        {
+          "name": "dhcp-server-leases",
+          "since": "246"
+        },
+        {
+          "name": "dhcp-static-lease",
+          "since": "249"
         }
       ],
       "notes": [
@@ -170,6 +178,26 @@
         {
           "range": ">=245",
           "impact": "VLANs and bridges (V) are written as a .netdev unit under /etc/systemd/network plus a VLAN= or Bridge= line in each member's .network file, previewed as one multi-file diff, installed with `install -m 644` and applied with a single `networkctl reload`; X removes a unit tui-network wrote with `rm -f`"
+        },
+        {
+          "range": ">=245",
+          "impact": "the DHCP screen (D) also reads systemd-networkd's own DHCP server, the one a `[DHCPServer]` section in a .network unit turns on: the pool derived from `Address=` with `PoolOffset=`/`PoolSize=`, the lease time, the advertised DNS, NTP, router and domain, and the static leases"
+        },
+        {
+          "range": ">=245",
+          "impact": "a change to that server is written to a drop-in of the tool's own (`<unit>.network.d/50-tui-network-dhcp.conf`), rendered whole and applied with `networkctl reload`; the unit itself is never rewritten, and each advertised list is cleared before it is set because a drop-in's `DNS=` adds to the unit's"
+        },
+        {
+          "range": ">=245",
+          "impact": "`[DHCPServer]` has no key for the domain (`EmitDomains=` belongs to `[IPv6SendRA]`), so tui-network emits it as the raw option it is, `SendOption=15:string:<domain>`"
+        },
+        {
+          "range": "<246",
+          "impact": "`networkctl status` does not print the \"Offered DHCP leases\" list (systemd 246 added it), so a networkd DHCP server shows its pool and its static leases but no live ones"
+        },
+        {
+          "range": "<249",
+          "impact": "`[DHCPServerStaticLease]` does not exist (systemd 249 added it), so a static lease written on an older systemd is read back by the screen but ignored by the server"
         }
       ],
       "tested": [

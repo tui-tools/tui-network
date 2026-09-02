@@ -45,7 +45,7 @@ func (a *app) dhcpHeaderView() string {
 
 	var facts []ui.Fact
 	switch server.Kind {
-	case dhcp.KindDnsmasq, dhcp.KindKea:
+	case dhcp.KindDnsmasq, dhcp.KindKea, dhcp.KindNetworkd:
 		state, style := "active", t.OK
 		if !server.Active {
 			state, style = "inactive", t.Warn
@@ -82,9 +82,11 @@ func (a *app) dhcpLines() []string {
 		return []string{"", "  " + orNone(server.Explain),
 			"",
 			"  A router serves DHCP and local DNS to its LAN. Install dnsmasq or",
-			"  ISC Kea and this screen fills in.",
+			"  ISC Kea, or turn systemd-networkd's own server on with",
+			"  DHCPServer=yes in the LAN's .network unit, and this screen fills in.",
 			"",
-			"  Run tui-network --demo to see it with a sample dnsmasq."}
+			"  Run tui-network --demo to see it with a sample dnsmasq, or",
+			"  tui-network --demo --demo-dhcp networkd for the networkd one."}
 	}
 
 	lines := []string{"Server"}
@@ -102,8 +104,19 @@ func (a *app) dhcpLines() []string {
 	if server.LeasesPath != "" {
 		lines = append(lines, "  leases file    "+server.LeasesPath)
 	}
+	if server.Kind == dhcp.KindNetworkd {
+		lines = append(lines,
+			"  dns            systemd-resolved answers DNS on this router; "+
+				"the DHCP server only advertises where to ask",
+			"  leases         read from `networkctl status`, which is where "+
+				"networkd publishes the leases it has offered")
+	}
 	if server.ManagedFile != "" {
-		lines = append(lines, "  tui-network    writes reservations to "+server.ManagedFile)
+		what := "reservations"
+		if server.Kind == dhcp.KindNetworkd {
+			what = "its DHCP drop-in"
+		}
+		lines = append(lines, "  tui-network    writes "+what+" to "+server.ManagedFile)
 	}
 	if server.Explain != "" {
 		lines = append(lines, "  note           "+server.Explain)
@@ -112,6 +125,23 @@ func (a *app) dhcpLines() []string {
 	// What the server advertises in a lease, merged across every file read,
 	// so the screen shows what a client is actually handed — dnsmasq only:
 	// Kea's options live in a config this phase does not parse.
+	if server.Kind == dhcp.KindNetworkd {
+		opts := a.dhcpModel.Options
+		lines = append(lines, "", "Advertised to clients")
+		lines = append(lines,
+			"  dns servers    "+orNetworkdDefault(strings.Join(opts.DNS, ", "),
+				"networkd propagates the uplink's servers"),
+			"  gateway        "+orNetworkdDefault(opts.Gateway,
+				"the server advertises its own address"),
+			"  ntp servers    "+orNetworkdDefault(strings.Join(opts.NTP, ", "),
+				"networkd propagates the uplink's servers"),
+			"  domain         "+orNone(opts.Domain),
+			"  lease time     "+orNetworkdDefault(opts.LeaseTime,
+				"systemd's default of 1h"))
+		if a.dhcpCaps.SupportsSetOptions {
+			lines = append(lines, "  tui-network    writes options to "+a.dhcpCaps.OptionsFile)
+		}
+	}
 	if server.Kind == dhcp.KindDnsmasq {
 		opts := a.dhcpModel.Options
 		lines = append(lines, "", "Advertised to clients")
@@ -210,7 +240,12 @@ func leaseLine(l dhcp.Lease) string {
 	if name == "" {
 		name = "—"
 	}
-	parts = append(parts, ui.Pad(name, 16), l.Expiry)
+	expiry := l.Expiry
+	if expiry == "" {
+		// systemd-networkd publishes no expiry with the leases it has offered.
+		expiry = "—"
+	}
+	parts = append(parts, ui.Pad(name, 16), expiry)
 	return strings.Join(parts, " ")
 }
 
@@ -219,6 +254,15 @@ func leaseLine(l dhcp.Lease) string {
 func orRouterDefault(value string) string {
 	if value == "" {
 		return "this router (option not set: dnsmasq advertises itself)"
+	}
+	return value
+}
+
+// orNetworkdDefault renders an advertised value, saying what an unset one
+// means: systemd-networkd fills the option in for itself.
+func orNetworkdDefault(value, fallback string) string {
+	if value == "" {
+		return "(not set: " + fallback + ")"
 	}
 	return value
 }

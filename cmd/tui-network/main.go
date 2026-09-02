@@ -29,6 +29,13 @@ const toolName = "tui-network"
 // what the version probe and the compatibility block are keyed on.
 const backendName = "systemd-networkd"
 
+// The values -demo-dhcp takes: the sample router runs dnsmasq, or
+// systemd-networkd's own DHCP server, which is what an Omarchy Router runs.
+const (
+	demoDHCPDnsmasq  = "dnsmasq"
+	demoDHCPNetworkd = "networkd"
+)
+
 // version is stamped by the release build (-ldflags "-X main.version=…").
 var version = "dev"
 
@@ -52,6 +59,10 @@ type options struct {
 	// sudoSet records whether -sudo was passed, so `--sudo ""` can disable
 	// escalation instead of reading as "not given".
 	sudoSet bool
+	// demoDHCP names the DHCP server the sample router runs under --demo.
+	// A router serves DHCP from a package (dnsmasq) or from systemd-networkd
+	// itself, and the two screens differ enough to be worth showing both.
+	demoDHCP string
 }
 
 // parseFlags defines and reads the command line.
@@ -64,6 +75,9 @@ func parseFlags(args []string, out *os.File) (options, error) {
 	fs.BoolVar(&opts.check, "check", false,
 		"read the network and print the parsed model as JSON, then exit "+
 			"(no UI, no changes); exit 1 if the backend cannot be read")
+	fs.StringVar(&opts.demoDHCP, "demo-dhcp", demoDHCPDnsmasq,
+		"with --demo: the DHCP server the sample router runs, \"dnsmasq\" or "+
+			"\"networkd\" (systemd-networkd's own)")
 	fs.BoolVar(&opts.report, "report", false, reportUsage)
 	fs.StringVar(&opts.themePath, "theme", "",
 		"path to an Omarchy-style colors.toml (overrides the config file)")
@@ -109,6 +123,10 @@ func run(args []string) error {
 	if opts.showVersion {
 		fmt.Println(toolName, version)
 		return nil
+	}
+	if opts.demoDHCP != demoDHCPDnsmasq && opts.demoDHCP != demoDHCPNetworkd {
+		return fmt.Errorf("-demo-dhcp: %q is not a sample DHCP server "+
+			"(%s or %s)", opts.demoDHCP, demoDHCPDnsmasq, demoDHCPNetworkd)
 	}
 
 	cfg, err := config.Load(config.Options{Tool: toolName, Defaults: defaults()})
@@ -191,6 +209,9 @@ func pickBackend(cfg config.Config, opts options,
 // Load explains the emptiness.
 func pickDHCP(cfg config.Config, opts options) dhcp.Backend {
 	if opts.demo {
+		if opts.demoDHCP == demoDHCPNetworkd {
+			return dhcpd.NewFakeNetworkd()
+		}
 		return dhcpd.NewFake()
 	}
 	backend, _ := dhcpd.NewReal(cfg.SudoPrefix())

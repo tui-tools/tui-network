@@ -34,6 +34,15 @@ const (
 	// KindKea is ISC Kea, the DHCP server the ISC ships in place of the old
 	// dhcpd.
 	KindKea = "kea"
+	// KindNetworkd is systemd-networkd's own DHCP server, the one a
+	// [DHCPServer] section in a .network unit turns on. It is the server an
+	// Omarchy Router profile runs: no DHCP package is installed at all, the
+	// LAN unit that holds the gateway address hands out the leases too.
+	//
+	// The value is the manifest's backend name as well, because the server is
+	// the same systemd the links screen already drives, so the version probe
+	// and the compatibility notes are the ones that backend block carries.
+	KindNetworkd = "systemd-networkd"
 )
 
 // Lease is one address a server has handed out, as its lease file records it.
@@ -121,8 +130,20 @@ type Options struct {
 	// to clients, empty when unset.
 	Domain string
 	// Upstreams are the `server=` forwarders dnsmasq resolves through, in read
-	// order. Empty means dnsmasq uses /etc/resolv.conf.
+	// order. Empty means dnsmasq uses /etc/resolv.conf. systemd-networkd's
+	// server does not forward DNS at all — systemd-resolved does that on a
+	// networkd router — so it leaves this empty.
 	Upstreams []string
+	// NTP are the advertised NTP servers (option 42). systemd-networkd emits
+	// them from its own [DHCPServer] NTP= key; dnsmasq's editor does not offer
+	// them, so the field is empty there.
+	NTP []string
+	// LeaseTime is the lease duration the server hands out by default, as
+	// written ("1h", "3600"). It belongs to the options editor on
+	// systemd-networkd, whose lease time is a [DHCPServer] key rather than a
+	// field of the pool line; dnsmasq keeps it on the pool and leaves this
+	// empty.
+	LeaseTime string
 }
 
 // Server is what was found about the DHCP server on this machine.
