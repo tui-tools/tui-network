@@ -165,6 +165,47 @@ func newDHCPOptionsForm(opts dhcp.Options, ownFile string) configForm {
 	return f
 }
 
+// newNetworkdDHCPOptionsForm builds the editor for the [DHCPServer] drop-in.
+// It is the networkd counterpart of newDHCPOptionsForm, and the fields differ
+// because the servers differ: systemd-networkd's own server carries the lease
+// time here rather than on the pool line, emits NTP servers of its own, and
+// forwards no DNS at all — systemd-resolved does that on a networkd router, so
+// there is no upstream field.
+//
+// It is seeded from the options in effect across the unit and its drop-ins,
+// not from the drop-in alone: the drop-in clears each advertised list before
+// setting it, so it has to open on what a client is handed today or an
+// unchanged submit would take it away.
+func newNetworkdDHCPOptionsForm(opts dhcp.Options, ownFile string) configForm {
+	fields := []formField{
+		{key: "adns", label: "DNS servers", kind: fieldText,
+			input: newFormText("_server_address, 9.9.9.9", strings.Join(opts.DNS, ", ")),
+			help: "Advertised to clients (option 6), comma separated. " +
+				"_server_address is this router itself. Empty lets networkd " +
+				"propagate the uplink's servers."},
+		{key: "agw", label: "Gateway", kind: fieldText,
+			input: newFormText("10.55.0.1", opts.Gateway),
+			help: "Router= (option 3). " +
+				"Empty advertises the server's own address, networkd's default."},
+		{key: "ntp", label: "NTP servers", kind: fieldText,
+			input: newFormText("10.55.0.1", strings.Join(opts.NTP, ", ")),
+			help: "NTP= (option 42), comma separated. " +
+				"Empty lets networkd propagate the uplink's servers."},
+		{key: "domain", label: "Domain", kind: fieldText,
+			input: newFormText("lan.example.test", opts.Domain),
+			help: "The domain handed to clients. networkd has no key for it, " +
+				"so it is sent as SendOption=15. Empty sends none."},
+		{key: "lease", label: "Lease time", kind: fieldText,
+			input: newFormText("1h", opts.LeaseTime),
+			help: "DefaultLeaseTimeSec=. A count of seconds or a span such " +
+				"as 30min or 12h. Empty leaves systemd's default of 1h."},
+	}
+	f := configForm{fields: fields, kind: formDHCPOptions,
+		title: "DHCP server options — " + ownFile}
+	f.focusActive()
+	return f
+}
+
 // newVLANForm builds the editor for a new VLAN: the device's name, the link it
 // rides on, and the 802.1Q id. The parent is a choice over the links networkd
 // manages, because a VLAN on a link this tool may not change is a device that

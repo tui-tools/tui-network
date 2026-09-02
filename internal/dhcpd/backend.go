@@ -18,7 +18,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tui-tools/tui-kit/runner"
@@ -30,11 +32,12 @@ var ErrNotAvailable = runner.ErrNotAvailable
 
 // searchPaths are the locations a non-root PATH commonly omits.
 var searchPaths = map[string][]string{
-	"dnsmasq":   {"/usr/sbin/dnsmasq", "/sbin/dnsmasq", "/usr/bin/dnsmasq"},
-	"kea-dhcp4": {"/usr/sbin/kea-dhcp4", "/usr/bin/kea-dhcp4"},
-	"systemctl": {"/usr/bin/systemctl", "/bin/systemctl"},
-	"install":   {"/usr/bin/install", "/bin/install"},
-	"cat":       {"/usr/bin/cat", "/bin/cat"},
+	"dnsmasq":    {"/usr/sbin/dnsmasq", "/sbin/dnsmasq", "/usr/bin/dnsmasq"},
+	"kea-dhcp4":  {"/usr/sbin/kea-dhcp4", "/usr/bin/kea-dhcp4"},
+	"networkctl": {"/usr/bin/networkctl", "/bin/networkctl"},
+	"systemctl":  {"/usr/bin/systemctl", "/bin/systemctl"},
+	"install":    {"/usr/bin/install", "/bin/install"},
+	"cat":        {"/usr/bin/cat", "/bin/cat"},
 }
 
 // The files each server keeps its state in. These are the defaults a
@@ -63,6 +66,9 @@ type Real struct {
 	keaDHCP4  *runner.Runner
 	systemctl *runner.Runner
 	install   *runner.Runner
+	// networkctl reads systemd-networkd's own DHCP server — the units, the
+	// version and the leases it has offered — and reloads it after a write.
+	networkctl *runner.Runner
 	// cat is the escalated fallback for a lease or config file a plain read
 	// cannot open.
 	cat *runner.Runner
@@ -70,6 +76,15 @@ type Real struct {
 	// now is the clock the lease expiries are measured against. A field so a
 	// test can pin it.
 	now func() time.Time
+
+	// units caches the networkd .network units the last Load read, because a
+	// mutation is rendered against the configuration that is in effect: the
+	// drop-in overrides the unit wholesale, so it has to be written from the
+	// merged picture rather than from its own previous contents. The mutex
+	// guards it against the read running in one goroutine and the build in
+	// another.
+	mu    sync.Mutex
+	units []NetworkdUnit
 }
 
 // Available reports whether either DHCP server is installed on this host.
@@ -85,6 +100,13 @@ func detectKind() string {
 	}
 	if runner.Available("kea-dhcp4", searchPaths["kea-dhcp4"]...) || fileExists(keaConfPath) {
 		return dhcp.KindKea
+	}
+	// systemd-networkd is last, and it is detected by configuration rather
+	// than by a binary: networkctl is present on every systemd machine, but it
+	// only serves DHCP where a .network unit says so. Looking for the section
+	// keeps a machine that merely runs networkd out of the DHCP screen.
+	if len(networkdUnits(context.Background(), nil)) > 0 {
+		return dhcp.KindNetworkd
 	}
 	return dhcp.KindNone
 }
@@ -120,6 +142,13 @@ func NewReal(sudoPrefix []string) (*Real, error) {
 	r.cat, _ = runner.New(runner.Options{
 		Bin: "cat", SearchPaths: searchPaths["cat"], SudoPrefix: sudoPrefix,
 	})
+	// networkctl reads unprivileged (the version, the status and the leases a
+	// link's server has offered) and escalates only for the reload that
+	// applies a write.
+	r.networkctl, _ = runner.New(runner.Options{
+		Bin: "networkctl", SearchPaths: searchPaths["networkctl"],
+		SudoPrefix: sudoPrefix, PrivilegedReads: &unprivileged,
+	})
 	return r, nil
 }
 
@@ -138,6 +167,8 @@ func (r *Real) Describe() string {
 		return "dnsmasq (DNS and DHCP)"
 	case dhcp.KindKea:
 		return "ISC Kea (read-only)"
+	case dhcp.KindNetworkd:
+		return "systemd-networkd's own DHCP server"
 	default:
 		return "no DHCP server"
 	}
@@ -146,10 +177,20 @@ func (r *Real) Describe() string {
 // Capabilities reports which mutations this backend offers: dnsmasq is
 // editable, Kea and a serverless machine are read-only.
 func (r *Real) Capabilities() dhcp.Capabilities {
-	if r.kind == dhcp.KindDnsmasq {
+	switch r.kind {
+	case dhcp.KindDnsmasq:
 		return dnsmasqCapabilities
+	case dhcp.KindNetworkd:
+		caps := networkdCapabilities
+		// Both files are the one drop-in, and its name is only known once a
+		// unit has been read; before the first Load the screen shows the shape
+		// of the path rather than a wrong one.
+		caps.ManagedFile = r.networkdDropinPath()
+		caps.OptionsFile = caps.ManagedFile
+		return caps
+	default:
+		return dhcp.Capabilities{}
 	}
-	return dhcp.Capabilities{}
 }
 
 // Preview renders the exact command line Run will execute.
@@ -170,6 +211,8 @@ func (r *Real) runnerFor(cmd dhcp.Command) *runner.Runner {
 		return r.install
 	case "systemctl":
 		return r.systemctl
+	case "networkctl":
+		return r.networkctl
 	default:
 		return nil
 	}
@@ -201,10 +244,13 @@ func (r *Real) Load(ctx context.Context) (dhcp.Model, error) {
 		return r.loadDnsmasq(ctx), nil
 	case dhcp.KindKea:
 		return r.loadKea(ctx), nil
+	case dhcp.KindNetworkd:
+		return r.loadNetworkd(ctx), nil
 	default:
 		return dhcp.Model{Server: dhcp.Server{
-			Kind:    dhcp.KindNone,
-			Explain: "no DHCP server was found: neither dnsmasq nor ISC Kea is installed here",
+			Kind: dhcp.KindNone,
+			Explain: "no DHCP server was found: dnsmasq and ISC Kea are not " +
+				"installed, and no .network unit declares DHCPServer=yes",
 		}}, nil
 	}
 }
@@ -380,6 +426,9 @@ func (r *Real) readFile(ctx context.Context, path string) (string, error) {
 
 // BuildAddReservation renders the managed drop-in with a reservation appended.
 func (r *Real) BuildAddReservation(res dhcp.Reservation) (dhcp.WritePlan, error) {
+	if r.kind == dhcp.KindNetworkd {
+		return r.networkdAddReservation(res)
+	}
 	if err := r.requireDnsmasq(); err != nil {
 		return dhcp.WritePlan{}, err
 	}
@@ -393,6 +442,9 @@ func (r *Real) BuildAddReservation(res dhcp.Reservation) (dhcp.WritePlan, error)
 
 // BuildRemoveReservation renders the reservation's own file with its line gone.
 func (r *Real) BuildRemoveReservation(res dhcp.Reservation) (dhcp.WritePlan, error) {
+	if r.kind == dhcp.KindNetworkd {
+		return r.networkdRemoveReservation(res)
+	}
 	if err := r.requireDnsmasq(); err != nil {
 		return dhcp.WritePlan{}, err
 	}
@@ -409,6 +461,9 @@ func (r *Real) BuildRemoveReservation(res dhcp.Reservation) (dhcp.WritePlan, err
 
 // BuildSetPoolRange renders the pool's file with its range adjusted.
 func (r *Real) BuildSetPoolRange(orig dhcp.Pool, newStart, newEnd string) (dhcp.WritePlan, error) {
+	if r.kind == dhcp.KindNetworkd {
+		return r.networkdSetPoolRange(orig, newStart, newEnd)
+	}
 	if err := r.requireDnsmasq(); err != nil {
 		return dhcp.WritePlan{}, err
 	}
@@ -429,6 +484,9 @@ func (r *Real) BuildSetPoolRange(orig dhcp.Pool, newStart, newEnd string) (dhcp.
 // edited. dnsmasq does not re-read configuration files on SIGHUP, so the plan
 // restarts the service rather than reloading it.
 func (r *Real) BuildSetOptions(o dhcp.Options) (dhcp.WritePlan, error) {
+	if r.kind == dhcp.KindNetworkd {
+		return r.networkdSetOptions(o)
+	}
 	if err := r.requireDnsmasq(); err != nil {
 		return dhcp.WritePlan{}, err
 	}
@@ -440,8 +498,9 @@ func (r *Real) BuildSetOptions(o dhcp.Options) (dhcp.WritePlan, error) {
 	return writePlan(DnsmasqOptionsFile, before, after, true, stageFile)
 }
 
-// requireDnsmasq refuses a mutation the backend cannot make: Kea is read-only
-// in this phase, and a machine with no server has nothing to change.
+// requireDnsmasq refuses a mutation the dnsmasq path cannot make: Kea is
+// read-only in this phase, and a machine with no server has nothing to change.
+// The networkd server has its own path and never reaches here.
 func (r *Real) requireDnsmasq() error {
 	if r.kind != dhcp.KindDnsmasq {
 		return fmt.Errorf("dhcpd: %s is read-only in this version", r.Name())
@@ -478,4 +537,301 @@ func stageFile(destination, content string) (string, error) {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// networkdUnits reads every .network unit on the machine that runs a DHCP
+// server, with its drop-ins folded in, in the order systemd-networkd reads
+// them: a unit name an earlier search directory claims wins, and the drop-ins
+// of that name are applied from every directory, /usr/lib first and /etc last.
+//
+// cat is the escalated fallback for a unit a plain read cannot open — netplan
+// renders its files into /run as mode 0640 — and may be nil, in which case
+// such a unit is simply not seen.
+func networkdUnits(ctx context.Context, cat *runner.Runner) []NetworkdUnit {
+	var units []NetworkdUnit
+	seen := map[string]bool{}
+	for _, dir := range networkdConfigDirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasSuffix(name, networkSuffix) || seen[name] {
+				continue
+			}
+			seen[name] = true
+			path := filepath.Join(dir, name)
+			raw, err := readNetworkdFile(ctx, cat, path)
+			if err != nil {
+				continue
+			}
+			files := append([]NetworkdFile{{Path: path, Raw: raw}},
+				networkdDropinFiles(ctx, cat, name)...)
+			unit := ParseNetworkdUnit(files)
+			if (unit.HasSection || unit.Enabled) && unit.HasSubnet() {
+				units = append(units, unit)
+			}
+		}
+	}
+	sortNetworkdUnits(units)
+	return units
+}
+
+// networkdDropinFiles reads the drop-ins of one unit name, in networkd's own
+// order: the search directories from the most general to the most specific, and
+// inside each one the files sorted by name.
+func networkdDropinFiles(ctx context.Context, cat *runner.Runner,
+	unitName string) []NetworkdFile {
+	var files []NetworkdFile
+	for i := len(networkdConfigDirs) - 1; i >= 0; i-- {
+		dir := filepath.Join(networkdConfigDirs[i], unitName+".d")
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".conf") {
+				names = append(names, entry.Name())
+			}
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			path := filepath.Join(dir, name)
+			raw, err := readNetworkdFile(ctx, cat, path)
+			if err != nil {
+				continue
+			}
+			files = append(files, NetworkdFile{Path: path, Raw: raw})
+		}
+	}
+	return files
+}
+
+// readNetworkdFile reads one unit or drop-in, escalating with `cat` only when a
+// plain read is refused for want of privilege.
+func readNetworkdFile(ctx context.Context, cat *runner.Runner, path string) (string, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // the path comes from systemd's own search directories
+	if err == nil {
+		return string(raw), nil
+	}
+	if !os.IsPermission(err) || cat == nil {
+		return "", err
+	}
+	return cat.Read(ctx, "cat", "--", path)
+}
+
+// loadNetworkd reads systemd-networkd's own DHCP server: the units that
+// declare one, the pool each hands out, the static leases, and the leases the
+// server has actually offered.
+func (r *Real) loadNetworkd(ctx context.Context) dhcp.Model {
+	units := networkdUnits(ctx, r.cat)
+	r.setUnits(units)
+
+	model := NetworkdModel(units)
+	server := dhcp.Server{
+		Kind:    dhcp.KindNetworkd,
+		Present: true,
+		Active:  r.serviceActive(ctx, networkdUnitName),
+		Version: r.networkdVersion(ctx),
+	}
+	for _, unit := range units {
+		server.ConfPaths = append(server.ConfPaths, unit.Path)
+		server.ConfPaths = append(server.ConfPaths, unit.Dropins...)
+		model.Leases = append(model.Leases, r.networkdLeases(ctx, unit)...)
+	}
+	if len(units) > 0 {
+		server.ManagedFile = NetworkdDropinPath(units[0].Path)
+	}
+	server.Explain = explainNetworkd(units)
+	if server.Explain == "" {
+		server.Explain = explainServer(server, len(model.Pools))
+	}
+	model.Server = server
+	return model
+}
+
+// networkdLeases reads the leases one unit's server has offered. They come from
+// `networkctl status`, which renders a bus property into its table; the JSON
+// output does not carry them, so this is the read path on every systemd.
+func (r *Real) networkdLeases(ctx context.Context, unit NetworkdUnit) []dhcp.Lease {
+	if r.networkctl == nil || unit.Link == "" || !unit.Enabled {
+		return nil
+	}
+	out, err := r.networkctl.Read(ctx, "networkctl", "status", "--no-pager", unit.Link)
+	if err != nil {
+		return nil
+	}
+	return ParseNetworkctlLeases(out)
+}
+
+// networkdVersion reads the systemd version behind the DHCP server, empty when
+// it cannot.
+func (r *Real) networkdVersion(ctx context.Context) string {
+	if r.networkctl == nil {
+		return ""
+	}
+	out, err := r.networkctl.Read(ctx, "networkctl", "--version")
+	if err != nil {
+		return ""
+	}
+	// "systemd 257 (257.13-1.fc42)" — the second field is the version.
+	fields := strings.Fields(runner.FirstLine(strings.TrimSpace(out)))
+	if len(fields) >= 2 && strings.EqualFold(fields[0], "systemd") {
+		return fields[1]
+	}
+	return ""
+}
+
+// setUnits records what the last read found, for the mutations to render
+// against.
+func (r *Real) setUnits(units []NetworkdUnit) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.units = units
+}
+
+// primaryUnit is the unit a mutation targets by default: the first
+// DHCP-serving unit in path order, which on a router with one LAN is the only
+// one there is.
+func (r *Real) primaryUnit() (NetworkdUnit, error) {
+	return r.unitFor("")
+}
+
+// unitFor is the unit a mutation targets. A pool carries the unit it was read
+// from, so an edit on a machine with more than one LAN changes the pool the
+// user was looking at rather than the first one; anything else takes the
+// primary.
+func (r *Real) unitFor(path string) (NetworkdUnit, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.units) == 0 {
+		return NetworkdUnit{}, fmt.Errorf(
+			"networkd: no .network unit here declares a DHCP server to change")
+	}
+	for _, unit := range r.units {
+		if path != "" && unit.Path == path {
+			return unit, nil
+		}
+	}
+	return r.units[0], nil
+}
+
+// networkdDropinPath is where a change lands, or the shape of that path before
+// a unit has been read.
+func (r *Real) networkdDropinPath() string {
+	unit, err := r.primaryUnit()
+	if err != nil {
+		return NetworkdDropinPath("<unit>" + networkSuffix)
+	}
+	return NetworkdDropinPath(unit.Path)
+}
+
+// networkdSpec builds the drop-in as it stands today: the pool and the
+// advertised options that are in effect across the unit and its drop-ins, and
+// the static leases this tool's own drop-in declares.
+//
+// The options are the effective ones rather than the drop-in's, because the
+// drop-in is rendered whole and clears each list before setting it: seeding
+// from the drop-in alone would drop a DNS= the unit sets the first time any
+// other field was changed. The leases are the opposite — a
+// [DHCPServerStaticLease] section is additive, so re-declaring the unit's own
+// would hand two leases to one client.
+func (r *Real) networkdSpec(unitPath string) (NetworkdDropin, NetworkdUnit, error) {
+	unit, err := r.unitFor(unitPath)
+	if err != nil {
+		return NetworkdDropin{}, NetworkdUnit{}, err
+	}
+	dropin := NetworkdDropinPath(unit.Path)
+	spec := NetworkdDropin{
+		Link:       unit.Link,
+		PoolOffset: unit.PoolOffset,
+		PoolSize:   unit.PoolSize,
+		Options:    NetworkdOptions(unit),
+	}
+	for _, lease := range unit.Leases {
+		if lease.Source == dropin {
+			spec.Leases = append(spec.Leases, lease)
+		}
+	}
+	return spec, unit, nil
+}
+
+// buildNetworkdDropin renders a spec and returns the previewed plan: the diff
+// against the drop-in on disk, and the install and reload that apply it.
+func (r *Real) buildNetworkdDropin(spec NetworkdDropin,
+	unit NetworkdUnit) (dhcp.WritePlan, error) {
+	path := NetworkdDropinPath(unit.Path)
+	after, err := RenderNetworkdDropin(spec)
+	if err != nil {
+		return dhcp.WritePlan{}, err
+	}
+	return networkdWritePlan(path, r.readOrEmpty(path), after, stageFile)
+}
+
+// networkdAddReservation adds a static lease to the drop-in.
+func (r *Real) networkdAddReservation(res dhcp.Reservation) (dhcp.WritePlan, error) {
+	spec, unit, err := r.networkdSpec("")
+	if err != nil {
+		return dhcp.WritePlan{}, err
+	}
+	// The clash check is against every lease the unit hands out, not only the
+	// drop-in's, while the section written is the drop-in's own.
+	lease, err := NewNetworkdLease(unit.Leases, res)
+	if err != nil {
+		return dhcp.WritePlan{}, err
+	}
+	spec.Leases = append(spec.Leases, lease)
+	return r.buildNetworkdDropin(spec, unit)
+}
+
+// networkdRemoveReservation takes a static lease out of the drop-in. A lease
+// the unit itself declares cannot be removed this way — a drop-in can add a
+// [DHCPServerStaticLease] section but not take one back — so it is refused
+// with the file to edit named.
+func (r *Real) networkdRemoveReservation(res dhcp.Reservation) (dhcp.WritePlan, error) {
+	spec, unit, err := r.networkdSpec("")
+	if err != nil {
+		return dhcp.WritePlan{}, err
+	}
+	dropin := NetworkdDropinPath(unit.Path)
+	if res.Source != "" && res.Source != dropin {
+		return dhcp.WritePlan{}, fmt.Errorf(
+			"networkd: %s is declared in %s, which tui-network does not rewrite; "+
+				"a drop-in can add a static lease but not remove one",
+			leaseLabel(res), res.Source)
+	}
+	spec.Leases, err = RemoveNetworkdLease(spec.Leases, res)
+	if err != nil {
+		return dhcp.WritePlan{}, err
+	}
+	return r.buildNetworkdDropin(spec, unit)
+}
+
+// networkdSetPoolRange turns a first and last address into the PoolOffset= and
+// PoolSize= that hand out exactly that range of the LAN's subnet.
+func (r *Real) networkdSetPoolRange(orig dhcp.Pool,
+	newStart, newEnd string) (dhcp.WritePlan, error) {
+	spec, unit, err := r.networkdSpec(orig.Source)
+	if err != nil {
+		return dhcp.WritePlan{}, err
+	}
+	offset, size, err := PoolOffsetSize(unit.Address, newStart, newEnd)
+	if err != nil {
+		return dhcp.WritePlan{}, err
+	}
+	spec.PoolOffset, spec.PoolSize = offset, size
+	return r.buildNetworkdDropin(spec, unit)
+}
+
+// networkdSetOptions rewrites what the server advertises and how long a lease
+// lasts.
+func (r *Real) networkdSetOptions(o dhcp.Options) (dhcp.WritePlan, error) {
+	spec, unit, err := r.networkdSpec("")
+	if err != nil {
+		return dhcp.WritePlan{}, err
+	}
+	spec.Options = o
+	return r.buildNetworkdDropin(spec, unit)
 }

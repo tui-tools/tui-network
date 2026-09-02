@@ -363,6 +363,10 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.dhcpModel = msg.model
+		// Re-read the capabilities: a backend whose managed file depends on
+		// what the read found — systemd-networkd's drop-in belongs to the unit
+		// that runs the server — can only name it once it has read.
+		a.dhcpCaps = a.dhcp.Capabilities()
 		return a, nil
 
 	case gatewaysMsg:
@@ -794,6 +798,15 @@ func (a *app) promptAddReservation() tea.Cmd {
 	if !a.requireDHCPMutation(a.dhcpCaps.SupportsAddReservation) {
 		return nil
 	}
+	if a.dhcpModel.Server.Kind == dhcp.KindNetworkd {
+		// systemd-networkd's static lease is a MAC and an address and nothing
+		// else: [DHCPServerStaticLease] has no hostname key.
+		a.openDHCPInput(inputAddReservation, "Add a static lease",
+			"00:00:5e:00:53:10 10.55.0.20",
+			"MAC and address. Lands in "+a.dhcpCaps.ManagedFile+
+				" as a [DHCPServerStaticLease] section.")
+		return nil
+	}
 	a.openDHCPInput(inputAddReservation, "Add a reservation",
 		"00:00:5e:00:53:10 192.0.2.20 nas",
 		"MAC, address and an optional hostname. Lands in "+a.dhcpCaps.ManagedFile+".")
@@ -843,7 +856,12 @@ func (a *app) promptDHCPOptions() tea.Cmd {
 	if !a.requireDHCPMutation(a.dhcpCaps.SupportsSetOptions) {
 		return nil
 	}
-	a.form = newDHCPOptionsForm(a.dhcpModel.OwnOptions, a.dhcpCaps.OptionsFile)
+	if a.dhcpModel.Server.Kind == dhcp.KindNetworkd {
+		a.form = newNetworkdDHCPOptionsForm(a.dhcpModel.OwnOptions,
+			a.dhcpCaps.OptionsFile)
+	} else {
+		a.form = newDHCPOptionsForm(a.dhcpModel.OwnOptions, a.dhcpCaps.OptionsFile)
+	}
 	a.fromDHCP = true
 	a.mode = modeForm
 	return nil
@@ -853,11 +871,16 @@ func (a *app) promptDHCPOptions() tea.Cmd {
 // Validation lives in the backend's renderer, the same code path that writes
 // the file, so the form cannot approve a value the renderer would refuse.
 func (a *app) submitOptionsForm() tea.Cmd {
+	// One submit path serves both editors: a field the open form does not
+	// have reads as empty, and each backend's renderer writes only the keys
+	// its server understands.
 	opts := dhcp.Options{
 		DNS:       splitList(a.form.get("adns")),
 		Gateway:   a.form.get("agw"),
 		Domain:    a.form.get("domain"),
 		Upstreams: splitList(a.form.get("upstream")),
+		NTP:       splitList(a.form.get("ntp")),
+		LeaseTime: strings.TrimSpace(a.form.get("lease")),
 	}
 	return a.confirmDHCPWrite("Set DHCP and DNS options",
 		func() (dhcp.WritePlan, error) {
