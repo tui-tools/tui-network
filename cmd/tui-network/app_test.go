@@ -50,6 +50,10 @@ func press(a *app, key string) tea.Cmd {
 		msg = tea.KeyMsg{Type: tea.KeyEsc}
 	case "tab":
 		msg = tea.KeyMsg{Type: tea.KeyTab}
+	case "up":
+		msg = tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		msg = tea.KeyMsg{Type: tea.KeyDown}
 	default:
 		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
 	}
