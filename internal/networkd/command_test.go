@@ -99,7 +99,7 @@ func TestBuildSetDomains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildSetDomains: %v", err)
 	}
-	want := "resolvectl domain enp1s0 example.test ~corp.test ."
+	want := "resolvectl domain enp1s0 example.test '~corp.test' ."
 	if got := cmd.String(); got != want {
 		t.Errorf("argv %q, want %q", got, want)
 	}
