@@ -141,11 +141,11 @@ type Gateway struct {
 	// what decides whether the priority can be made persistent for it.
 	Managed bool
 	// Persistent reports that the configuration anchors this uplink's
-	// priority — a Gateway= in a .network file, or a route metric in a
-	// NetworkManager profile — so it survives a reconfigure.
+	// priority (a Gateway= in a .network file, or a route metric in a
+	// NetworkManager profile), so it survives a reconfigure.
 	Persistent bool
 	// ConfigFile is the .network file (or the NetworkManager profile's file)
-	// that configures the interface, when one was found — where a persistent
+	// that configures the interface, when one was found: where a persistent
 	// priority attaches.
 	ConfigFile string
 	// ConfigID is the identifier of that configuration when the backend has
@@ -807,7 +807,7 @@ type WritePlan struct {
 
 // Guard is implemented by a backend whose manager can take a rollback point
 // before a change and restore it on its own if the change is not confirmed in
-// time — NetworkManager's checkpoints. The UI wraps every change that can cut
+// time: NetworkManager's checkpoints. The UI wraps every change that can cut
 // the session in one: the arm command runs first, then the change, then the
 // operator keeps it or rolls it back, and if the operator never answers
 // because the change cut them off, the manager rolls back by itself.

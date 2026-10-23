@@ -95,7 +95,11 @@ func (a *app) headerView(subtitleExtra string) string {
 	if !a.model.Running {
 		managerValue, managerStyle = "not running", t.Danger
 	}
-	facts := []ui.Fact{{Label: "networkd", Value: managerValue, Style: &managerStyle}}
+	label := a.caps.ManagerLabel
+	if label == "" {
+		label = "networkd"
+	}
+	facts := []ui.Fact{{Label: label, Value: managerValue, Style: &managerStyle}}
 
 	resolved := "not running"
 	if a.model.ResolvedRunning {
@@ -333,7 +337,11 @@ func (a *app) detailLines() []string {
 
 	lines = append(lines, a.configLines(link)...)
 
-	lines = append(lines, "", "systemd-networkd journal")
+	journal := a.caps.Journal
+	if journal == "" {
+		journal = "systemd-networkd"
+	}
+	lines = append(lines, "", journal+" journal")
 	if len(a.detailJournal) == 0 {
 		lines = append(lines, "  (reading…)")
 	}
@@ -347,10 +355,17 @@ func (a *app) detailLines() []string {
 func (a *app) configLines(link network.Link) []string {
 	file, ok := a.model.ConfigFor(link)
 	if !ok {
+		if a.caps.ConfigDir == "" {
+			return []string{"", "Connection profile",
+				"  (none is active on this link; press e to write one)"}
+		}
 		return []string{"", "Network file",
 			"  (none matches this link — press e to write one)"}
 	}
 	lines := []string{"", "Network file: " + file.Path}
+	if file.ID != "" {
+		lines = []string{"", "Connection profile: " + file.Name, "  file: " + file.Path}
+	}
 	for _, dropin := range link.NetworkFileDropins {
 		lines = append(lines, "  drop-in: "+dropin)
 	}
@@ -534,10 +549,13 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 		hints = append(hints,
 			ui.KeyHint{Key: "u", Desc: "up"}, ui.KeyHint{Key: "d", Desc: "down"})
 	}
-	return append(hints,
+	hints = append(hints,
 		ui.KeyHint{Key: "c", Desc: "reconfigure"},
-		ui.KeyHint{Key: "e", Desc: "edit file"},
-		ui.KeyHint{Key: "V", Desc: "vlan/bridge"},
+		ui.KeyHint{Key: "e", Desc: a.editHint()})
+	if a.caps.SupportsNetdev {
+		hints = append(hints, ui.KeyHint{Key: "V", Desc: "vlan/bridge"})
+	}
+	return append(hints,
 		ui.KeyHint{Key: "s", Desc: "dns"},
 		ui.KeyHint{Key: "D", Desc: "dhcp"},
 		ui.KeyHint{Key: "w", Desc: "gateways"},
@@ -545,6 +563,14 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 		ui.KeyHint{Key: "/", Desc: "filter"},
 		ui.KeyHint{Key: "?", Desc: "help"},
 		ui.KeyHint{Key: "q", Desc: "quit"})
+}
+
+// editHint names what e edits on this backend.
+func (a *app) editHint() string {
+	if a.caps.ConfigDir == "" {
+		return "edit profile"
+	}
+	return "edit file"
 }
 
 // detailHelpKeys is the hint bar of the detail screen.
@@ -557,7 +583,7 @@ func (a *app) detailHelpKeys() []ui.KeyHint {
 	return append(hints,
 		ui.KeyHint{Key: "c", Desc: "reconfigure"},
 		ui.KeyHint{Key: "n", Desc: "renew"},
-		ui.KeyHint{Key: "e", Desc: "edit file"},
+		ui.KeyHint{Key: "e", Desc: a.editHint()},
 		ui.KeyHint{Key: "s", Desc: "dns"},
 		ui.KeyHint{Key: "S", Desc: "domains"},
 		ui.KeyHint{Key: "f", Desc: "flush"},
@@ -595,5 +621,6 @@ func helpKeys() []ui.KeyHint {
 		{Key: "", Desc: ""},
 		{Key: "note", Desc: "every change is previewed and confirmed first"},
 		{Key: "note", Desc: "a link another manager owns is shown read-only"},
+		{Key: "note", Desc: "on NetworkManager a risky change rolls back by itself unless kept"},
 	}
 }

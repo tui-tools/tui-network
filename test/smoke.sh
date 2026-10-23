@@ -14,9 +14,12 @@
 #
 #   networkd        Ubuntu cloud images and Omarchy Server: links are managed,
 #                   the tool may change them.
-#   NetworkManager  Fedora Cloud: networkctl still lists every link and calls
-#                   all of them unmanaged, and the tool must show them
-#                   read-only rather than claiming the machine has no network.
+#   NetworkManager  Fedora Cloud: the tool selects its NetworkManager backend,
+#                   reads the devices and profiles through nmcli, and may
+#                   change the devices NetworkManager manages. Forced onto the
+#                   networkd backend (--backend networkd) it must still show
+#                   every link read-only, as it did before it could drive
+#                   NetworkManager.
 set -uo pipefail
 
 bin="${TUI_LAB_BIN:-tui-network}"
@@ -93,12 +96,8 @@ record_compat() {
 
 echo "--- tui-network smoke on $(. /etc/os-release && echo "$PRETTY_NAME")"
 
-if ! command -v networkctl >/dev/null; then
-  echo "FAIL  networkctl is not installed on this machine"
-  exit 1
-fi
-
-# Which manager this machine really runs, decided the way the tool decides it.
+# Which manager this machine really runs, decided the way the tool decides it
+# when only one of them is active.
 if systemctl is-active --quiet systemd-networkd; then
   manager=networkd
 elif systemctl is-active --quiet NetworkManager; then
@@ -108,12 +107,24 @@ else
 fi
 echo "      manager=$manager"
 
+if [[ $manager != networkmanager ]] && ! command -v networkctl >/dev/null; then
+  echo "FAIL  networkctl is not installed on this machine"
+  exit 1
+fi
+
+backend=systemd-networkd
+[[ $manager == networkmanager ]] && backend=networkmanager
+
 # 1. The read path works at all and names the backend it drove. Reading takes
 #    no privileges, so this runs as the plain lab user — which is itself the
 #    assertion that the tool does not escalate to look.
 check "check reads the network unprivileged" \
   "$bin --check" \
-  '"backend": "systemd-networkd"'
+  "\"backend\": \"$backend\""
+
+check "check says why it chose $backend" \
+  "$bin --check" \
+  '"detail": ".+"'
 
 # --- the report block ------------------------------------------------------
 #
@@ -125,7 +136,7 @@ check "check reads the network unprivileged" \
 # host name appearing in it is a bug, not a cosmetic detail.
 check "report names the backend it drives" \
   "$bin --report" \
-  '^backend: systemd-networkd'
+  "^backend: $backend"
 
 check "report says the run was live" \
   "$bin --report" \
@@ -150,10 +161,17 @@ check "report leaks neither a home path nor the host name" \
 
 # 2. The link count matches what networkctl lists. This is the real parser
 #    test: a tool that fetched the output but failed to parse it reports zero.
-links=$(networkctl --no-legend list | grep -cE '^ *[0-9]+ ')
-check "link count matches \`networkctl list\` ($links)" \
-  "$bin --check" \
-  "\"links\": $links"
+if [[ $manager == networkmanager ]]; then
+  links=$(nmcli -t -f DEVICE device | grep -c .)
+  check "link count matches \`nmcli device\` ($links)" \
+    "$bin --check" \
+    "\"links\": $links"
+else
+  links=$(networkctl --no-legend list | grep -cE '^ *[0-9]+ ')
+  check "link count matches \`networkctl list\` ($links)" \
+    "$bin --check" \
+    "\"links\": $links"
+fi
 
 # 3. The loopback is always there, and always parsed.
 check "the loopback link is parsed" \
@@ -259,31 +277,43 @@ case "$manager" in
     ;;
 
   networkmanager)
-    # 5. On a NetworkManager machine networkd is not running. The tool must
-    #    still read the links — this is the case that would otherwise show an
-    #    empty screen for no visible reason.
-    check "networkd is reported as not running" \
+    # 5. NetworkManager is running, so its backend reads the machine and
+    #    says so, and the devices it configures come back writable: the
+    #    count matches the devices nmcli reports in a state it manages.
+    check "NetworkManager is reported as running" \
       "$bin --check" \
-      '"running": false'
+      '"running": true'
 
-    check "NetworkManager is detected by name" \
+    nm_managed=$(nmcli -t -f TYPE,STATE device |
+      grep -vE '^loopback:|:unmanaged$|externally' | grep -c .)
+    check "managed links match nmcli ($nm_managed)" \
       "$bin --check" \
-      '"foreignManager": "NetworkManager"'
+      "\"managed\": $nm_managed"
 
-    # 6. And every link must be read-only. This is the assertion that keeps
-    #    tui-network out of NetworkManager's way: not one link may come back
-    #    managed, so not one action can be built against this machine.
-    check "no link is managed" \
-      "$bin --check" \
-      '"managed": 0'
+    # 6. The active profiles are read, and the one behind a connected
+    #    device is the one the tool reports for it.
+    active_uuid=$(nmcli -t -f UUID,DEVICE connection show --active |
+      awk -F: '$2 != "" && $2 != "lo" {print $1; exit}')
+    if [[ -n $active_uuid ]]; then
+      check "the active profile $active_uuid is read" \
+        "$bin --check" \
+        "\"ID\": \"$active_uuid\""
+    fi
 
-    check_absent "no link is marked writable" \
-      "$bin --check" \
-      '"Managed": true'
+    check "the loopback is read-only with a reason" \
+      "$bin --check | python3 -c 'import json,sys;l=[x for x in json.load(sys.stdin)[\"model\"][\"Links\"] if x[\"Name\"]==\"lo\"][0];print(l[\"Managed\"], l[\"ReadOnlyReason\"])'" \
+      '^False .+'
 
-    check "every unmanaged link carries a reason" \
-      "$bin --check" \
-      '"ReadOnlyReason": "NetworkManager is running'
+    # 7. Forced onto networkd, the old contract holds: networkctl still
+    #    lists every link, all of them unmanaged, none writable.
+    if command -v networkctl >/dev/null; then
+      check "--backend networkd keeps every link read-only" \
+        "$bin --backend networkd --check" \
+        '"managed": 0'
+      check "and names NetworkManager as the reason" \
+        "$bin --backend networkd --check" \
+        '"ReadOnlyReason": "NetworkManager is running'
+    fi
     ;;
 
   none)
@@ -299,9 +329,16 @@ case "$manager" in
 esac
 
 # 8. --check must never change anything: the link list is identical after it.
-before=$(networkctl --no-legend list)
+snapshot() {
+  if [[ $manager == networkmanager ]]; then
+    nmcli -t -f DEVICE,STATE,CONNECTION device
+  else
+    networkctl --no-legend list
+  fi
+}
+before=$(snapshot)
 $bin --check >/dev/null 2>&1
-after=$(networkctl --no-legend list)
+after=$(snapshot)
 if [[ "$before" == "$after" ]]; then
   printf 'PASS  --check left the network untouched\n'
   pass=$((pass + 1))

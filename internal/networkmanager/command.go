@@ -14,8 +14,12 @@ import (
 )
 
 // Name is the backend's name, which is also the manifest's backend name the
-// version probe is keyed on.
-const Name = "NetworkManager"
+// version probe is keyed on. The manifest takes lower-case names only.
+const Name = "networkmanager"
+
+// Display is how NetworkManager is named to a person: in reasons, dialogs,
+// the header and the journal unit.
+const Display = "NetworkManager"
 
 // The IPv4 methods the guided editor offers. They are NetworkManager's own
 // words for the three things an operator asks of a link's IPv4: take it from
@@ -39,10 +43,10 @@ var capabilities = network.Capabilities{
 	// ports re-parented through their own profiles; that is a feature of
 	// its own and not offered yet.
 	SupportsNetdev: false,
-	Manager:        Name,
-	ManagerLabel:   Name,
+	Manager:        Display,
+	ManagerLabel:   Display,
 	ConfigNoun:     "connection profile",
-	Journal:        Name,
+	Journal:        Display,
 }
 
 // Capabilities reports what the NetworkManager backend supports.
@@ -177,13 +181,22 @@ func BuildSetDNS(link string, servers []string) (network.Command, error) {
 	if err != nil {
 		return network.Command{}, err
 	}
+	// The servers given replace the ones DHCP hands out, the way
+	// `resolvectl dns` replaces them: without ignore-auto-dns NetworkManager
+	// would append the lease's servers after them. An empty list goes back to
+	// what DHCP provides.
+	ignore := "yes"
+	if len(servers) == 0 {
+		ignore = "no"
+	}
 	argv := []string{"nmcli", "device", "modify", link,
-		"ipv4.dns", strings.Join(v4, ","), "ipv6.dns", strings.Join(v6, ",")}
+		"ipv4.dns", strings.Join(v4, ","), "ipv6.dns", strings.Join(v6, ","),
+		"ipv4.ignore-auto-dns", ignore, "ipv6.ignore-auto-dns", ignore}
 	description := fmt.Sprintf("Set the DNS servers of %s to %s until its "+
 		"profile is activated again", link, strings.Join(servers, ", "))
 	if len(servers) == 0 {
-		description = "Clear the DNS servers of " + link +
-			" until its profile is activated again"
+		description = "Clear the DNS servers set on " + link +
+			", so it uses what DHCP provides, until its profile is activated again"
 	}
 	return network.Command{Argv: argv, Description: description, Destructive: true}, nil
 }

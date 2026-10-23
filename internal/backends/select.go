@@ -82,7 +82,7 @@ func Decide(f Facts) (Selection, error) {
 		counts := fmt.Sprintf("NetworkManager manages %d link(s), systemd-networkd %d",
 			f.NetworkManagerLinks, f.NetworkdLinks)
 		if f.NetworkManagerLinks > f.NetworkdLinks && f.NetworkManagerInstalled {
-			return Selection{Name: NetworkManagerName, Foreign: NetworkdName,
+			return Selection{Name: NetworkManagerName, Foreign: "systemd-networkd",
 				Detail: "both are running; " + counts +
 					", so NetworkManager is the one in charge"}, nil
 		}
@@ -93,7 +93,7 @@ func Decide(f Facts) (Selection, error) {
 				detail = "both are running and " + counts +
 					"; a tie keeps systemd-networkd"
 			}
-			return Selection{Name: NetworkdName, Foreign: NetworkManagerName,
+			return Selection{Name: NetworkdName, Foreign: networkmanager.Display,
 				Detail: detail}, nil
 		}
 	}

@@ -14,7 +14,10 @@ with their addresses, routes, DNS and the `.network` file behind each one — an
 
 `systemd-networkd` has no TUI: you get `networkctl`, `resolvectl`, `ip` and a
 text editor, in four different terminals. `tui-network` puts them on one screen,
-in the [Omarchy](https://omarchy.org) visual style.
+in the [Omarchy](https://omarchy.org) visual style. On a machine NetworkManager
+runs, it drives NetworkManager instead, through `nmcli`, and wraps every risky
+change in a checkpoint NetworkManager rolls back by itself if the change cuts
+you off (see [NetworkManager](#networkmanager)).
 
 ![Links table](docs/screenshots/tui-network-main.png)
 
@@ -192,6 +195,11 @@ every command is built and previewed for real, and nothing touches your system.
 Its DHCP screen shows a sample dnsmasq; `--demo-dhcp networkd` swaps in a
 sample router whose DHCP is `systemd-networkd`'s own.
 
+`--demo=networkmanager` runs against a sample NetworkManager machine instead: a
+wired device on DHCP, a wireless one on a static profile, a container bridge
+NetworkManager only observes, and the loopback. The checkpoint and the
+keep-or-roll-back dialog work there too.
+
 ## Every change is previewed
 
 ![Writing a .network file](docs/screenshots/tui-network-diff.png)
@@ -313,6 +321,8 @@ uplink another manager owns gets the live switch only, and the screen says why.
 tui-network                       # drive the real network
 tui-network --demo                # sample machine, no privileges needed
 tui-network --demo --demo-dhcp networkd   # …whose DHCP is networkd's own
+tui-network --demo=networkmanager # a sample NetworkManager machine
+tui-network --backend networkmanager      # skip detection: auto, networkd, networkmanager
 tui-network --check               # read the network, print JSON, exit
 tui-network --report              # print what a bug report needs, exit
 tui-network --theme ~/mytheme/colors.toml
@@ -498,16 +508,87 @@ list, `space` ticks a link and `enter` accepts the set.
 
 ![Help](docs/screenshots/tui-network-help.png)
 
+## NetworkManager
+
+`tui-network` picks its backend from what the machine runs, never from what is
+installed: Fedora and Ubuntu desktops ship `networkctl` next to NetworkManager.
+
+- Only one of `NetworkManager.service` and `systemd-networkd.service` is
+  active: that one.
+- Both are active: the one that manages more links. A tie keeps
+  systemd-networkd.
+- Neither is active: systemd-networkd when `networkctl` is installed (its
+  read-only view of a machine with no manager), NetworkManager when only `nmcli`
+  is.
+
+`backend = "networkmanager"` in the configuration, or `--backend`, skips the
+detection. `--check` prints the choice and the sentence explaining it in a
+`selection` block, and `--report` on a `selected:` line.
+
+On NetworkManager the same keys do the same jobs, through `nmcli`:
+
+| Key | What runs |
+| --- | --- |
+| `u` / `d` | `nmcli device connect` / `disconnect <dev>` |
+| `c` | `nmcli device reapply <dev>` |
+| `n` | `nmcli connection up uuid <uuid> ifname <dev>`: NetworkManager has no renew verb, and a re-activation asks for a new lease |
+| `r` | `nmcli connection reload` |
+| `f` | `resolvectl flush-caches`, where systemd-resolved runs |
+| `s` / `S` | `nmcli device modify <dev> ipv4.dns … ipv6.dns …` / `ipv4.dns-search …`: runtime only, like `resolvectl` |
+| `e` | `nmcli connection modify uuid <uuid> ipv4.method … ipv4.addresses … ipv4.gateway … ipv4.dns … ipv4.dns-search …`, then `nmcli connection up` on the device; a wired device with no profile gets `nmcli connection add type ethernet` |
+| `w`, `s` / `x` | `nmcli device modify <dev> ipv4.route-metric <n>` on a device NetworkManager manages, `ip route replace` on one it does not |
+| `w`, `P` | `nmcli connection modify uuid <uuid> ipv4.route-metric <n>`, then `nmcli device reapply <dev>` |
+
+The editor shows the profile's settings as a diff in `nmcli`'s own
+`setting.key: value` form, and covers IPv4: `auto`, `manual` or `disabled`, an
+address, a gateway, DNS servers of either family and search domains. Every
+other setting of the profile is left as it is. Profiles are always named by
+UUID in a command line, never by their free-text name.
+
+### A change that cuts the session undoes itself
+
+NetworkManager can take a checkpoint of every device and profile and restore
+it on its own when a timeout runs out, whether or not the program that asked is
+still alive. Every change that can drop connectivity (anything the confirm
+dialog paints red) is wrapped in one:
+
+1. The confirm dialog shows one more command, run first:
+   `busctl call org.freedesktop.NetworkManager /org/freedesktop/NetworkManager
+   org.freedesktop.NetworkManager CheckpointCreate aouu 0 60 6` (every device,
+   60 seconds, and a rollback also removes a profile or device the change
+   created).
+2. The change runs.
+3. A second dialog asks whether to keep it and counts down. `y` runs
+   `CheckpointDestroy` and keeps the change; `n` runs `CheckpointRollback` and
+   puts everything back now. Both are previewed.
+4. Nobody answers, because the change cut the SSH session the dialog was on:
+   NetworkManager rolls back by itself when the 60 seconds run out.
+
+If a step fails after the checkpoint was taken, the same dialog opens with the
+error, so rolling back is one key away. Reloading the profiles and flushing the
+resolver cache are not wrapped: neither can drop a session. A machine without
+`busctl` gets the change without the net, and the dialog says so.
+
+### What stays read-only
+
+The loopback; a device NetworkManager does not manage; and one it reports as
+`connected (externally)`, configured by something else (Docker's bridges,
+a VPN client's tunnel) and only observed. With escalation turned off
+(`--sudo ""`) and no root, every link is read-only and says why, instead of
+offering changes that can only fail.
+
 ## Links another manager owns
 
-On a machine running NetworkManager, `networkctl` still lists every link and
-reports all of them `unmanaged`. `tui-network` shows them — with their
-addresses, routes and DNS, read from the kernel and from systemd-resolved — and
-refuses every action on them, naming NetworkManager as the reason.
+Forced onto the networkd backend (`--backend networkd`) on a machine running
+NetworkManager, `networkctl` still lists every link and reports all of them
+`unmanaged`. `tui-network` shows them, with their addresses, routes and DNS,
+read from the kernel and from systemd-resolved, and refuses every action on
+them, naming NetworkManager as the reason. The NetworkManager backend does the
+same for a link systemd-networkd manages while both run.
 
-That is the whole rule: a link `systemd-networkd` does not manage is a link this
-tool will not touch, because a change to it would either be undone on the next
-reconfigure or fight with whoever does own it.
+That is the whole rule: a link the selected backend's manager does not manage
+is a link this tool will not touch, because a change to it would either be
+undone on the next reconfigure or fight with whoever does own it.
 
 ## What v0.1 can do
 
@@ -550,13 +631,18 @@ reconfigure or fight with whoever does own it.
   replace` and persistently with a `systemd-networkd` drop-in on a managed link,
   each previewed with the exact command.
 - Show a link another manager owns as read-only, with the reason.
+- Drive NetworkManager when the machine runs it: devices, profiles, the link
+  verbs, runtime DNS, an IPv4 profile editor and the uplink priority, all
+  through `nmcli`, with every risky change wrapped in a NetworkManager
+  checkpoint that rolls back by itself unless kept.
 - Follow the active Omarchy theme, and respect `NO_COLOR`.
 
 ## What v0.1 cannot do
 
-- **No NetworkManager backend.** Its links are read and shown, never changed.
-  The `network.Backend` interface is where one would go; nothing in the UI names
-  `networkctl`.
+- **On NetworkManager, no VLANs or bridges** (`V`/`X`): they are profiles of
+  their own there, with ports re-parented through their own profiles, and are
+  not built yet. The profile editor covers IPv4 and DNS only, and never
+  touches Wi-Fi settings or secrets.
 - **No netplan**, no `wpa_supplicant`, no wireless scanning or joining.
 - **Only VLANs and bridges among the `.netdev` kinds.** Bonds, VXLANs, tunnels
   and the rest are shown as links, and a unit `tui-network` did not write is
@@ -612,6 +698,23 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | `<246` | `networkctl status` does not print the "Offered DHCP leases" list (systemd 246 added it), so a networkd DHCP server shows its pool and its static leases but no live ones |
 | `<249` | `[DHCPServerStaticLease]` does not exist (systemd 249 added it), so a static lease written on an older systemd is read back by the screen but ignored by the server |
 
+### networkmanager
+
+| | |
+| --- | --- |
+| Binary | `nmcli` |
+| Version read with | `nmcli --version` |
+| Minimum | 1.30 |
+| Tested | `1.46.0`, `1.56.0`, `1.56.1` |
+
+| Versions | What changes |
+| --- | --- |
+| `>=1.30` | chosen when NetworkManager.service runs and systemd-networkd does not, or both run and it manages more links (`--backend` overrides); reads `nmcli -t device show`, `nmcli -t connection show` and `ip -j route` |
+| `>=1.30` | link verbs are `nmcli device connect`, `disconnect`, `reapply` and `nmcli connection up` (renew); runtime DNS and the default-route switch are `nmcli device modify`; the editor (e) and P are `nmcli connection modify` by UUID |
+| `>=1.30` | a change that can cut the session is wrapped in a 60 s checkpoint (`busctl call ... CheckpointCreate`, previewed): y keeps it (CheckpointDestroy), n rolls it back, and NetworkManager rolls it back by itself if nobody answers |
+| `>=1.30` | VLANs and bridges (V/X) are not offered on NetworkManager yet; a device it only observes (`connected (externally)`), an unmanaged one and the loopback are read-only |
+| `<1.44` | a device's search domains are printed as IP4.DOMAIN rather than IP4.SEARCHES; both are read |
+
 ### dnsmasq
 
 | | |
@@ -653,6 +756,10 @@ environment. Flags override everything. See
 [`examples/config.toml`](examples/config.toml).
 
 ```toml
+# Which network manager to drive: "auto" (detect), "networkd" or
+# "networkmanager".
+backend = "auto"
+
 # Privilege escalation prefix; "" runs the command directly.
 sudo = "sudo -n"
 
@@ -682,11 +789,17 @@ ConfigFile{Path, Raw, Settings, Links, MatchName}
 NetdevFile{Path, Raw, Settings, Name, Kind, Owned}
 ```
 
-`internal/networkd` is the only package that starts a process. It drives four
-programs through four kit runners — `networkctl`, `resolvectl`, `ip` and
-`journalctl` — plus `install` for the writes and `rm` for the one removal, and
+`internal/networkd` drives four programs through four kit runners
+(`networkctl`, `resolvectl`, `ip` and `journalctl`), plus `install` for the
+writes and `rm` for the one removal. `internal/networkmanager` drives `nmcli`,
+`ip`, `resolvectl`, `journalctl` and `busctl` the same way, and implements
+`network.Guard`, the checkpoint the UI wraps risky changes in.
+`internal/backends` picks one of them. Only these backend packages start a
+process, and
 [`check-exec.sh`](https://github.com/tui-tools/tui-kit/blob/main/tools/check-exec.sh)
-fails the build if any other package imports `os/exec`.
+fails the build if any other package imports `os/exec`. The design notes of
+the NetworkManager backend are in
+[`docs/networkmanager-backend.md`](docs/networkmanager-backend.md).
 
 Mutations are `runner.Command` values produced by the backend. The UI shows them
 and, on confirmation, hands the same ones back to the
@@ -706,7 +819,15 @@ make screenshots  # re-render the frames above from --demo
 
 The parser tests run against captured output from real machines
 (`internal/networkd/testdata`), with the hardware addresses and one routable
-network rewritten into the documentation ranges.
+network rewritten into the documentation ranges. The NetworkManager parsers run
+against `nmcli` output captured from NetworkManager 1.56 (Fedora 44) and 1.46
+(Ubuntu 24.04) (`internal/networkmanager/testdata`).
+
+[`test/networkmanager/`](test/networkmanager/) drives the NetworkManager
+backend end to end against a real NetworkManager, in a Fedora or Ubuntu
+container with systemd, on veth and dummy devices: every change through the
+TUI under `tmux`, the keep, the rollback, and a killed session that
+NetworkManager rolls back by itself.
 
 Dependencies are deliberately small: Bubble Tea, Bubbles and
 [tui-kit](https://github.com/tui-tools/tui-kit), which carries the palette, the
@@ -715,7 +836,9 @@ widgets, the config loader and the command runner shared by the whole family.
 ## Safety notes
 
 - Taking a link down, or reconfiguring it, can drop the session you are working
-  over. The confirm dialog says so before you agree.
+  over. The confirm dialog says so before you agree. On NetworkManager the
+  change is also wrapped in a checkpoint that undoes it by itself after 60
+  seconds unless you keep it.
 - So can enslaving a link to a bridge or a VLAN, and so can releasing it again:
   the link's addresses move to the new device on the next reload. The dialog
   names the links being re-parented and says you will lose the session if you

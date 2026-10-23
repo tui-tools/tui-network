@@ -5,6 +5,10 @@
 # machine-wide one. TUI_NETWORK_* environment variables override both, and
 # command line flags override everything.
 
+# Which network manager to drive: "auto" detects the one the machine runs,
+# "networkd" and "networkmanager" skip the detection.
+backend = "auto"
+
 # Privilege escalation prefix used for actions; "" runs the command directly.
 sudo = "sudo -n"
 
@@ -13,5 +17,6 @@ sudo = "sudo -n"
 theme = ""
 
 # Every key can also be set in the environment, upper-cased and prefixed:
+#   TUI_NETWORK_BACKEND=networkmanager
 #   TUI_NETWORK_SUDO="doas"
 #   TUI_NETWORK_THEME=/etc/tui/colors.toml

@@ -49,7 +49,10 @@ names the `connection`, `ipv4` and `ipv6` settings only.
 
 A connection profile is shown where a `.network` file is shown on networkd: the
 detail screen lists its `connection`, `ipv4` and `ipv6` settings, and the file
-it lives in.
+it lives in. On Ubuntu a profile made with `nmcli` is kept in netplan and
+rendered to `/run/NetworkManager/system-connections/netplan-NM-<uuid>.nmconnection`;
+`nmcli connection modify` writes back through netplan, so the editor works the
+same there.
 
 A device is writable when NetworkManager manages it and an active profile
 configured it. It is read-only, with the reason on screen, when it is
@@ -125,8 +128,8 @@ fail.
 
 ## `--check`, `--report`, `--demo`
 
-- `--check` reports `"backend": "NetworkManager"`, the `selection` block, and
-  the `compat` block for the `NetworkManager` backend of `tool.json`
+- `--check` reports `"backend": "networkmanager"`, the `selection` block, and
+  the `compat` block for the `networkmanager` backend of `tool.json`
   (`nmcli --version`).
 - `--report` names the selected backend, why it was selected, and the
   NetworkManager version.
@@ -139,10 +142,13 @@ fail.
 ## Testing
 
 - Unit tests: the terse parsers against output captured from Fedora 44
-  (NetworkManager 1.54) and Ubuntu 24.04 (NetworkManager 1.46), every builder,
+  (NetworkManager 1.56) and Ubuntu 24.04 (NetworkManager 1.46), every builder,
   the detection rules as a table, and the app flows (confirm, keep, roll back,
   timeout) against the fake.
-- Integration: the smoke test (`test/smoke.sh`) asserts the NetworkManager case
-  on a real machine, and the change paths, checkpoint and rollback included, are
-  exercised against NetworkManager running under systemd in Fedora and Ubuntu
-  containers, on dummy and veth devices.
+- Smoke: `test/smoke.sh` asserts the NetworkManager case on a real machine:
+  the backend it selects, the link and managed counts against `nmcli device`,
+  the active profile, the read-only loopback, and that `--backend networkd`
+  still keeps every link read-only there.
+- End to end: `test/networkmanager/run.sh` drives every change through the
+  TUI against NetworkManager under systemd in a Fedora or Ubuntu container,
+  checkpoint, keep, rollback and the killed session included.

@@ -365,7 +365,7 @@ func (f *Fake) applyBusctl(argv []string) (string, error) {
 	switch argv[5] {
 	case "CheckpointCreate":
 		if len(f.checkpoints) > 0 {
-			return "", fmt.Errorf("Call failed: device 'lo' is already included in a checkpoint")
+			return "", fmt.Errorf("call failed: device 'lo' is already included in a checkpoint")
 		}
 		f.nextCheckpoint++
 		id := "/org/freedesktop/NetworkManager/Checkpoint/" + strconv.Itoa(f.nextCheckpoint)
@@ -374,7 +374,7 @@ func (f *Fake) applyBusctl(argv []string) (string, error) {
 	case "CheckpointDestroy", "CheckpointRollback":
 		id := argv[len(argv)-1]
 		if _, ok := f.checkpoints[id]; !ok {
-			return "", fmt.Errorf("Call failed: checkpoint %s does not exist", id)
+			return "", fmt.Errorf("call failed: checkpoint %s does not exist", id)
 		}
 		if argv[5] == "CheckpointDestroy" {
 			delete(f.checkpoints, id)
@@ -425,7 +425,7 @@ func (f *Fake) applyNmcli(argv []string) (string, error) {
 		return f.setState(argv[3], stateDisconnected, "disconnected")
 	case "device reapply":
 		if f.device(argv[3]) == nil {
-			return "", fmt.Errorf("Error: Device '%s' not found.", argv[3])
+			return "", fmt.Errorf("device '%s' not found", argv[3])
 		}
 		return "Connection successfully reapplied to device '" + argv[3] + "'.", nil
 	case "device modify":
@@ -444,7 +444,7 @@ func (f *Fake) applyNmcli(argv []string) (string, error) {
 func (f *Fake) setState(name string, code int, state string) (string, error) {
 	device := f.device(name)
 	if device == nil {
-		return "", fmt.Errorf("Error: Device '%s' not found.", name)
+		return "", fmt.Errorf("device '%s' not found", name)
 	}
 	device.StateCode, device.State = code, state
 	if code != stateActivated {
@@ -466,7 +466,7 @@ func (f *Fake) setState(name string, code int, state string) (string, error) {
 func (f *Fake) modifyDevice(name string, pairs []string) (string, error) {
 	device := f.device(name)
 	if device == nil {
-		return "", fmt.Errorf("Error: Device '%s' not found.", name)
+		return "", fmt.Errorf("device '%s' not found", name)
 	}
 	for i := 0; i+1 < len(pairs); i += 2 {
 		value := pairs[i+1]
@@ -477,6 +477,9 @@ func (f *Fake) modifyDevice(name string, pairs []string) (string, error) {
 			device.DNS = append(ipv4Only(device.DNS), splitList(value)...)
 		case "ipv4.dns-search":
 			device.Searches = splitList(value)
+		case "ipv4.ignore-auto-dns", "ipv6.ignore-auto-dns":
+			// The sample's lease carries no DNS of its own, so there is
+			// nothing to drop or bring back.
 		case "ipv4.route-metric", "ipv6.route-metric":
 			metric, _ := strconv.Atoi(value)
 			f.setDefaultMetric(name, metric)
@@ -505,7 +508,7 @@ func familyOf(list []string, six bool) []string {
 func (f *Fake) modifyProfile(uuid string, pairs []string) (string, error) {
 	profile := f.profile(uuid)
 	if profile == nil {
-		return "", fmt.Errorf("Error: unknown connection '%s'.", uuid)
+		return "", fmt.Errorf("unknown connection '%s'", uuid)
 	}
 	for i := 0; i+1 < len(pairs); i += 2 {
 		section, key, _ := strings.Cut(pairs[i], ".")
@@ -538,7 +541,7 @@ func (f *Fake) activate(uuid, name string) (string, error) {
 	profile := f.profile(uuid)
 	device := f.device(name)
 	if profile == nil || device == nil {
-		return "", fmt.Errorf("Error: Connection activation failed: unknown connection or device")
+		return "", fmt.Errorf("connection activation failed: unknown connection or device")
 	}
 	f.applyProfile(device, *profile)
 	return "Connection successfully activated.", nil

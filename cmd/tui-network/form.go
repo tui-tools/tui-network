@@ -82,6 +82,9 @@ type configForm struct {
 	kind formKind
 	// title heads the dialog.
 	title string
+	// base is the spec the form was seeded from. A field the form does not
+	// show (the file path on NetworkManager) keeps its value from here.
+	base network.FileSpec
 }
 
 // newFormText builds one text input for a form field.
@@ -102,6 +105,10 @@ func newConfigForm(link string, spec network.FileSpec,
 	dhcp := formField{key: "dhcp", label: "DHCP", kind: fieldChoice,
 		options: caps.DHCPModes,
 		help:    "yes covers both families; no makes the link static."}
+	if caps.ConfigDir == "" {
+		dhcp.label = "IPv4 method"
+		dhcp.help = "auto takes IPv4 from DHCP; manual sets it here; disabled has none."
+	}
 	for i, mode := range caps.DHCPModes {
 		if mode == spec.DHCP {
 			dhcp.choice = i
@@ -130,8 +137,20 @@ func newConfigForm(link string, spec network.FileSpec,
 			help:  "Where it is installed. It must be under " + caps.ConfigDir + "."},
 	}
 
-	f := configForm{fields: fields, kind: formNetworkFile,
-		title: "Network file for " + link}
+	title := "Network file for " + link
+	if caps.ConfigDir == "" {
+		// A NetworkManager profile is bound to its device and named by its
+		// UUID, so there is no match name and no path to ask for.
+		var kept []formField
+		for _, field := range fields {
+			if field.key != "match" && field.key != "path" {
+				kept = append(kept, field)
+			}
+		}
+		fields = kept
+		title = "Connection profile for " + link
+	}
+	f := configForm{fields: fields, kind: formNetworkFile, title: title, base: spec}
 	f.focusActive()
 	return f
 }
@@ -348,15 +367,29 @@ func (f configForm) get(key string) string {
 // is the same code path the file renderer uses, so the form cannot approve
 // something the renderer would refuse.
 func (f configForm) spec() network.FileSpec {
-	return network.FileSpec{
-		Path:      f.get("path"),
-		MatchName: f.get("match"),
-		DHCP:      f.get("dhcp"),
-		Address:   f.get("address"),
-		Gateway:   f.get("gateway"),
-		DNS:       strings.Fields(f.get("dns")),
-		Domains:   strings.Fields(f.get("domains")),
+	spec := f.base
+	spec.DHCP = f.get("dhcp")
+	spec.Address = f.get("address")
+	spec.Gateway = f.get("gateway")
+	spec.DNS = strings.Fields(f.get("dns"))
+	spec.Domains = strings.Fields(f.get("domains"))
+	if f.has("path") {
+		spec.Path = f.get("path")
 	}
+	if f.has("match") {
+		spec.MatchName = f.get("match")
+	}
+	return spec
+}
+
+// has reports whether the form shows a field.
+func (f configForm) has(key string) bool {
+	for _, field := range f.fields {
+		if field.key == key {
+			return true
+		}
+	}
+	return false
 }
 
 // view renders the form as a dialog.
