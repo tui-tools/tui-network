@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/tui-tools/tui-kit/compat"
+	"github.com/tui-tools/tui-network/internal/backends"
 	"github.com/tui-tools/tui-network/internal/dhcpd"
 )
 
@@ -16,7 +17,7 @@ import (
 // than left to be guessed, and that no network was read to produce any of it.
 func TestRunReportDemo(t *testing.T) {
 	var out strings.Builder
-	opts := options{demo: true, report: true}
+	opts := options{demo: demoFlag{on: true, backend: backends.BackendNetworkd}, report: true}
 	if err := runReport(baseConfig(), opts, dhcpd.NewFake(), compat.Result{}, &out); err != nil {
 		t.Fatalf("runReport: %v", err)
 	}

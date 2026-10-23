@@ -52,6 +52,10 @@ var capabilities = network.Capabilities{
 	SupportsFileEdit:    true,
 	SupportsNetdev:      true,
 	ConfigDir:           ConfigDir,
+	Manager:             "systemd-networkd",
+	ManagerLabel:        "networkd",
+	ConfigNoun:          ".network file",
+	Journal:             "systemd-networkd",
 }
 
 // Capabilities reports what the networkd backend supports.
@@ -364,6 +368,14 @@ func SpecFromFile(file network.ConfigFile, link string) network.FileSpec {
 		spec.Domains = append(spec.Domains, strings.Fields(domains)...)
 	}
 	return spec
+}
+
+// SpecFor seeds the guided form for a link from the .network file the model
+// says applies to it. It is the Backend method both the real and the fake
+// backend answer with.
+func SpecFor(model network.Model, link network.Link) network.FileSpec {
+	file, _ := model.ConfigFor(link)
+	return SpecFromFile(file, link.Name)
 }
 
 // normalizeDHCP maps the boolean spellings systemd accepts onto the four

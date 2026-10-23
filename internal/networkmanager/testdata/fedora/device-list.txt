@@ -1,0 +1,4 @@
+eth1:ethernet:connected
+dummy0:dummy:connected
+lo:loopback:connected (externally)
+peer1:ethernet:unmanaged

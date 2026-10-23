@@ -8,6 +8,7 @@ import (
 
 	"github.com/tui-tools/tui-kit/compat"
 	"github.com/tui-tools/tui-kit/config"
+	"github.com/tui-tools/tui-network/internal/backends"
 	"github.com/tui-tools/tui-network/internal/dhcpd"
 )
 
@@ -27,7 +28,7 @@ func TestParseFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	if !opts.demo || opts.themePath != "/t/colors.toml" {
+	if !opts.demo.on || opts.themePath != "/t/colors.toml" {
 		t.Errorf("opts = %+v", opts)
 	}
 	if opts.sudoSet {
@@ -68,7 +69,7 @@ func TestDefaultsCoverEveryFlag(t *testing.T) {
 }
 
 func TestPickBackendDemo(t *testing.T) {
-	backend, err := pickBackend(baseConfig(), options{demo: true}, compat.Result{})
+	backend, err := pickBackend(baseConfig(), options{demo: demoFlag{on: true, backend: backends.BackendNetworkd}}, compat.Result{})
 	if err != nil {
 		t.Fatalf("pickBackend: %v", err)
 	}
@@ -80,12 +81,12 @@ func TestPickBackendDemo(t *testing.T) {
 // TestCheckReportsTheModel covers the contract the smoke test depends on: the
 // counts and the manager state a shell script can grep for.
 func TestCheckReportsTheModel(t *testing.T) {
-	backend, err := pickBackend(baseConfig(), options{demo: true}, compat.Result{})
+	backend, err := pickBackend(baseConfig(), options{demo: demoFlag{on: true, backend: backends.BackendNetworkd}}, compat.Result{})
 	if err != nil {
 		t.Fatalf("pickBackend: %v", err)
 	}
 	var out bytes.Buffer
-	if err := runCheck(backend, compat.Result{}, dhcpd.NewFake(), compat.Result{}, &out); err != nil {
+	if err := runCheck(backend, backends.Selection{Name: backendName}, compat.Result{}, dhcpd.NewFake(), compat.Result{}, &out); err != nil {
 		t.Fatalf("runCheck: %v", err)
 	}
 	for _, want := range []string{

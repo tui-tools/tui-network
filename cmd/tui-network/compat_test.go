@@ -94,7 +94,7 @@ func TestUnknownVersionKeepsEveryFeature(t *testing.T) {
 }
 
 func TestProbeInDemoModeReportsNothing(t *testing.T) {
-	if got := probeCompat(context.Background(), true); got.Backend != "" {
+	if got := probeCompat(context.Background(), true, backendName); got.Backend != "" {
 		t.Errorf("--demo probed the host: %+v", got)
 	}
 }

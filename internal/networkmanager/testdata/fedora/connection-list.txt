@@ -1,0 +1,4 @@
+lab-eth1:b89d8198-4c0f-45a9-a99f-b78559768894:802-3-ethernet:eth1:/etc/NetworkManager/system-connections/lab-eth1.nmconnection
+lab-uplink2:02f047ac-2d2b-4807-b647-a5f62df846f7:dummy:dummy0:/etc/NetworkManager/system-connections/lab-uplink2.nmconnection
+lo:ad97c1ad-be98-40f9-8ffd-0abe8c3d81ed:loopback:lo:/run/NetworkManager/system-connections/lo.nmconnection
+Wired connection 1:11935ee6-072b-30f1-b3e9-758d0487dd90:802-3-ethernet::/run/NetworkManager/system-connections/Wired connection 1.nmconnection

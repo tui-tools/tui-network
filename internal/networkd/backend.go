@@ -385,6 +385,11 @@ func (r *Real) BuildSetDomains(link string, domains []string) (network.Command, 
 	return BuildSetDomains(link, domains)
 }
 
+// SpecFor seeds the guided editor from the link's .network file.
+func (r *Real) SpecFor(model network.Model, link network.Link) network.FileSpec {
+	return SpecFor(model, link)
+}
+
 // BuildWriteConfig stages the new .network file in a temporary directory and
 // returns the diff plus the two commands that apply it.
 //

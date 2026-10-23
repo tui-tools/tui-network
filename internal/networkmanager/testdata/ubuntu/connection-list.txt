@@ -1,0 +1,4 @@
+lab-eth1:b584acae-97a0-4961-be73-400077e4949d:802-3-ethernet:eth1:/run/NetworkManager/system-connections/netplan-NM-b584acae-97a0-4961-be73-400077e4949d.nmconnection
+lab-uplink2:710a9335-5de9-4769-bc46-9d7993705156:dummy:dummy0:/run/NetworkManager/system-connections/netplan-dummy0.nmconnection
+lo:ad2adbf5-2c4e-41bb-887c-43a120beae8d:loopback:lo:/run/NetworkManager/system-connections/lo.nmconnection
+Wired connection 1:c9e0f259-aa1b-3763-a74e-5de27a7db682:802-3-ethernet::/run/NetworkManager/system-connections/Wired connection 1.nmconnection

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tui-tools/tui-kit/compat"
+	"github.com/tui-tools/tui-network/internal/backends"
 	"github.com/tui-tools/tui-network/internal/dhcp"
 	"github.com/tui-tools/tui-network/internal/network"
 )
@@ -30,6 +31,8 @@ type checkReport struct {
 	// Describe is the backend's own one-line summary, which is where the demo
 	// backend says it is a demo.
 	Describe string `json:"describe"`
+	// Selection is which manager was chosen and the sentence saying why.
+	Selection backends.Selection `json:"selection"`
 	// Running and ResolvedRunning report which daemons answered.
 	Running         bool `json:"running"`
 	ResolvedRunning bool `json:"resolvedRunning"`
@@ -124,10 +127,11 @@ type dhcpReport struct {
 // turns into a non-zero exit — so a caller can treat the exit code alone as
 // the verdict.
 //
-// A machine running NetworkManager is not a failure: networkctl still lists
-// the links, every one of them comes back unmanaged, and the report says so.
-// That is the read path working, and it is what the smoke test asserts there.
-func runCheck(backend network.Backend, backendCompat compat.Result,
+// Which backend read the machine is part of the report: on a NetworkManager
+// machine it is the NetworkManager backend, unless the configuration asked for
+// networkd, in which case every link comes back read-only and the report says
+// so. Both are the read path working, and the smoke test asserts each.
+func runCheck(backend network.Backend, selection backends.Selection, backendCompat compat.Result,
 	dhcpBackend dhcp.Backend, dhcpCompat compat.Result, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
 	defer cancel()
@@ -142,6 +146,7 @@ func runCheck(backend network.Backend, backendCompat compat.Result,
 		Version:         version,
 		Backend:         backend.Name(),
 		Describe:        backend.Describe(),
+		Selection:       selection,
 		Running:         model.Running,
 		ResolvedRunning: model.ResolvedRunning,
 		ForeignManager:  model.ForeignManager,
