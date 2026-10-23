@@ -3,7 +3,7 @@
   "name": "tui-network",
   "binary": "tui-network",
   "tagline": "Links, addresses, routes and DNS, with every change previewed before it runs",
-  "description": "A terminal UI for the machine's network. It shows the links you have — state, type, addresses, gateway, MAC, MTU and driver — with the routing table, what systemd-resolved uses for DNS, and the `.network` file behind each link.\n\nOpen a link and you get the whole picture in one screen: its addresses and where each came from, its routes, DNS servers and search domains, DHCP lease, the `.network` file that configures it, and what systemd-networkd said about it in the journal.\n\nChanges are previewed. Bringing a link up or down, reconfiguring it, renewing a lease, setting DNS at runtime, and editing a `.network` file — a unified diff, then an install and a reload — all go through a confirm dialog carrying the exact command line. A link systemd-networkd does not manage is shown read-only with the reason.\n\nThe `D` screen reads the router's DHCP server — dnsmasq, Kea or networkd's own `[DHCPServer]` — with its pools, leases and reservations, `w` switches the default route or fails over, and `V` builds a VLAN or a bridge as a `.netdev` unit.\n\nRun `tui-network --demo` to drive a sample machine: every key works, every command is previewed for real, and nothing touches your system.",
+  "description": "A terminal UI for the machine's network. It shows the links you have — state, type, addresses, gateway, MAC, MTU and driver — with the routing table, what systemd-resolved uses for DNS, and the `.network` file behind each link.\n\nOpen a link and you get the whole picture in one screen: its addresses and where each came from, its routes, DNS servers and search domains, DHCP lease, the `.network` file that configures it, and what systemd-networkd said about it in the journal.\n\nChanges are previewed. Bringing a link up or down, reconfiguring it, renewing a lease, setting DNS at runtime, and editing a `.network` file — a unified diff, then an install and a reload — all go through a confirm dialog carrying the exact command line. On a NetworkManager machine the same keys drive `nmcli`, and a risky change rolls back by itself unless kept.\n\nThe `D` screen reads the router's DHCP server — dnsmasq, Kea or networkd's own `[DHCPServer]` — with its pools, leases and reservations, `w` switches the default route or fails over, and `V` builds a VLAN or a bridge as a `.netdev` unit.\n\nRun `tui-network --demo` to drive a sample machine: every key works, and nothing touches your system.",
   "category": "network",
   "homepage": "https://github.com/tui-tools/tui-network",
   "repo": "https://github.com/tui-tools/tui-network",
@@ -208,6 +208,47 @@
       ]
     },
     {
+      "name": "networkmanager",
+      "binary": "nmcli",
+      "versionCommand": [
+        "nmcli",
+        "--version"
+      ],
+      "versionRegex": "version ([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "minimum": "1.30",
+      "searchPaths": [
+        "/usr/bin/nmcli",
+        "/bin/nmcli"
+      ],
+      "notes": [
+        {
+          "range": ">=1.30",
+          "impact": "chosen when NetworkManager.service runs and systemd-networkd does not, or both run and it manages more links (`--backend` overrides); reads `nmcli -t device show`, `nmcli -t connection show` and `ip -j route`"
+        },
+        {
+          "range": ">=1.30",
+          "impact": "link verbs are `nmcli device connect`, `disconnect`, `reapply` and `nmcli connection up` (renew); runtime DNS and the default-route switch are `nmcli device modify`; the editor (e) and P are `nmcli connection modify` by UUID"
+        },
+        {
+          "range": ">=1.30",
+          "impact": "a change that can cut the session is wrapped in a 60 s checkpoint (`busctl call ... CheckpointCreate`, previewed): y keeps it (CheckpointDestroy), n rolls it back, and NetworkManager rolls it back by itself if nobody answers"
+        },
+        {
+          "range": ">=1.30",
+          "impact": "VLANs and bridges (V/X) are not offered on NetworkManager yet; a device it only observes (`connected (externally)`), an unmanaged one and the loopback are read-only"
+        },
+        {
+          "range": "<1.44",
+          "impact": "a device's search domains are printed as IP4.DOMAIN rather than IP4.SEARCHES; both are read"
+        }
+      ],
+      "tested": [
+        "1.46.0",
+        "1.56.0",
+        "1.56.1"
+      ]
+    },
+    {
       "name": "dnsmasq",
       "binary": "dnsmasq",
       "versionCommand": [
@@ -339,15 +380,17 @@
   ],
   "since": "2026-08-29",
   "keywords": [
+    "bubbletea",
+    "dhcp",
+    "dns",
     "network",
+    "networkctl",
+    "networkmanager",
+    "nmcli",
+    "resolvectl",
+    "routes",
     "systemd-networkd",
     "systemd-resolved",
-    "networkctl",
-    "resolvectl",
-    "dns",
-    "dhcp",
-    "routes",
-    "tui",
-    "bubbletea"
+    "tui"
   ]
 }

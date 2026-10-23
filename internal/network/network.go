@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tui-tools/tui-kit/runner"
 )
@@ -136,15 +137,20 @@ type Gateway struct {
 	// Multipath reports that this gateway is one leg of a multipath default
 	// route, which the kernel load-balances rather than fails over.
 	Multipath bool
-	// Managed reports that systemd-networkd owns the interface, which is what
-	// decides whether a persistent drop-in can be written for it.
+	// Managed reports that the backend's manager owns the interface, which is
+	// what decides whether the priority can be made persistent for it.
 	Managed bool
-	// Persistent reports that a .network file sets a Gateway= for this
-	// interface, so the priority survives a reconfigure.
+	// Persistent reports that the configuration anchors this uplink's
+	// priority (a Gateway= in a .network file, or a route metric in a
+	// NetworkManager profile), so it survives a reconfigure.
 	Persistent bool
-	// ConfigFile is the .network file that configures the interface, when one
-	// was found — where a persistent drop-in attaches.
+	// ConfigFile is the .network file (or the NetworkManager profile's file)
+	// that configures the interface, when one was found: where a persistent
+	// priority attaches.
 	ConfigFile string
+	// ConfigID is the identifier of that configuration when the backend has
+	// one beyond its path: a NetworkManager profile's UUID. Empty on networkd.
+	ConfigID string
 	// Egress is what `ip route get` said about reaching this gateway, when the
 	// optional reachability probe ran. Dev empty means it was not probed or did
 	// not resolve.
@@ -255,10 +261,17 @@ func (m Model) annotateGateway(gw *Gateway) {
 		return
 	}
 	gw.ConfigFile = file.Path
+	gw.ConfigID = file.ID
 	if _, ok := file.Get("Network", "Gateway"); ok {
 		gw.Persistent = true
 	}
 	if _, ok := file.Get("Route", "Gateway"); ok {
+		gw.Persistent = true
+	}
+	// A NetworkManager profile anchors an uplink's priority with its route
+	// metric; -1 is NetworkManager's "use the default" and anchors nothing.
+	if metric, ok := file.Get(gw.Family, "route-metric"); ok &&
+		metric != "" && metric != "-1" {
 		gw.Persistent = true
 	}
 }
@@ -447,6 +460,13 @@ type ConfigFile struct {
 	// MatchName is the `[Match] Name=` value, which is what the guided form
 	// edits.
 	MatchName string
+	// ID identifies the configuration when its path is not enough: a
+	// NetworkManager profile's UUID, which is what nmcli is told to modify.
+	// Empty for a .network file.
+	ID string
+	// Name is the configuration's own name when it has one: a NetworkManager
+	// profile's connection.id. Empty for a .network file.
+	Name string
 }
 
 // Get returns the value of a setting, and whether it was present.
@@ -642,6 +662,10 @@ type FileSpec struct {
 	DNS     []string
 	// Domains is the search domain list.
 	Domains []string
+	// Connection is the NetworkManager profile (its UUID) the form edits,
+	// empty when the link has none yet or on networkd, where Path names the
+	// file instead.
+	Connection string
 }
 
 // Capabilities tells the UI what a backend supports, so the key map and the
@@ -663,8 +687,20 @@ type Capabilities struct {
 	// SupportsNetdev reports whether VLANs and bridges can be created and
 	// removed as .netdev units.
 	SupportsNetdev bool
-	// ConfigDir is where a written .network file lands.
+	// ConfigDir is where a written .network file lands. Empty on a backend
+	// whose configuration is not a file the form names (NetworkManager), and
+	// the form then asks for no path.
 	ConfigDir string
+	// Manager is the daemon this backend drives, as reasons and dialogs name
+	// it ("systemd-networkd", "NetworkManager").
+	Manager string
+	// ManagerLabel is the short form the header shows ("networkd").
+	ManagerLabel string
+	// ConfigNoun names what the guided editor writes (".network file",
+	// "connection profile").
+	ConfigNoun string
+	// Journal is the unit whose log the detail screen shows.
+	Journal string
 }
 
 // Backend is the boundary between the UI and the machine. Load reads state;
@@ -706,8 +742,12 @@ type Backend interface {
 	// BuildWriteConfig renders a .network file, writes it to a temporary
 	// path and returns the diff against what is on disk today plus the
 	// commands that install it and reload the manager. Nothing is installed
-	// until those commands are run.
+	// until those commands are run. On NetworkManager it is the profile
+	// change instead: the settings diff and the nmcli commands that apply it.
 	BuildWriteConfig(spec FileSpec) (WritePlan, error)
+	// SpecFor seeds the guided editor for a link from the configuration that
+	// applies to it in the model, so editing starts from what is in effect.
+	SpecFor(model Model, link Link) FileSpec
 
 	// BuildCreateNetdev renders the .netdev unit for a VLAN or a bridge and
 	// the member lines that attach it to the links it rides on, and returns
@@ -760,6 +800,33 @@ type WritePlan struct {
 	Files []FileChange
 	// Commands are run in order, and are what the confirm dialog shows.
 	Commands []Command
+	// Note is what the backend wants said about when the change takes
+	// effect, shown under the diff. Empty when there is nothing to add.
+	Note string
+}
+
+// Guard is implemented by a backend whose manager can take a rollback point
+// before a change and restore it on its own if the change is not confirmed in
+// time: NetworkManager's checkpoints. The UI wraps every change that can cut
+// the session in one: the arm command runs first, then the change, then the
+// operator keeps it or rolls it back, and if the operator never answers
+// because the change cut them off, the manager rolls back by itself.
+//
+// Every command here is previewed like any other: arming, keeping and rolling
+// back are changes to the machine too.
+type Guard interface {
+	// BuildArm returns the command that takes the rollback point, restored
+	// by the manager after timeout unless it is kept first. It fails when the
+	// machine cannot arm one, and the change then runs without it.
+	BuildArm(timeout time.Duration) (Command, error)
+	// ArmedID reads the rollback point's identifier from the arm command's
+	// output.
+	ArmedID(output string) (string, error)
+	// BuildKeep returns the command that keeps the change: it discards the
+	// rollback point.
+	BuildKeep(id string) (Command, error)
+	// BuildRollback returns the command that restores the rollback point now.
+	BuildRollback(id string) (Command, error)
 }
 
 // The link actions BuildLinkAction accepts.

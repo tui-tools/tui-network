@@ -494,6 +494,11 @@ func (f *Fake) BuildSetDomains(link string, domains []string) (network.Command, 
 	return BuildSetDomains(link, domains)
 }
 
+// SpecFor seeds the guided editor from the link's .network file.
+func (f *Fake) SpecFor(model network.Model, link network.Link) network.FileSpec {
+	return SpecFor(model, link)
+}
+
 // BuildWriteConfig stages the file in memory and returns the same plan the
 // real backend returns — the same diff, and the same two commands. --demo
 // writes nothing at all, so the staging path is a name rather than a file.

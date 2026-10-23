@@ -1,0 +1,7 @@
+# NetworkManager under systemd on Fedora, for test/networkmanager/run.sh.
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf -y install NetworkManager systemd iproute procps-ng sudo python3 dnsmasq tmux \
+    && dnf clean all
+RUN systemctl enable NetworkManager && useradd -m lab \
+    && echo "lab ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/lab
+CMD ["/sbin/init"]

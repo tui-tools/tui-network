@@ -1,0 +1,8 @@
+# NetworkManager under systemd on Ubuntu, for test/networkmanager/run.sh.
+FROM docker.io/library/ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get -y install network-manager systemd systemd-sysv dbus \
+    iproute2 sudo python3 systemd-resolved dnsmasq-base tmux && apt-get clean
+RUN systemctl enable NetworkManager && useradd -m lab \
+    && echo "lab ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/lab
+CMD ["/sbin/init"]

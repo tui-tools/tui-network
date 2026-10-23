@@ -124,6 +124,14 @@ type app struct {
 	loadFailed bool
 	// busy blocks input while a command runs.
 	busy bool
+
+	// guard is the backend's automatic rollback, nil on a backend without
+	// one (systemd-networkd). keep is the rollback point a change is waiting
+	// on, while the keep-or-roll-back dialog is open.
+	guard network.Guard
+	keep  keepState
+	// now is the clock the keep dialog counts down on; tests replace it.
+	now func() time.Time
 }
 
 // loadedMsg carries the result of a Load.
@@ -157,6 +165,11 @@ type ranMsg struct {
 	title  string
 	output string
 	err    error
+	// guarded records that the plan's first command armed a rollback point,
+	// and outputs holds what each command that ran printed, so the point's
+	// identifier can be read back from the first.
+	guarded bool
+	outputs []string
 	// viaDHCP records that the plan ran against the DHCP backend, so the right
 	// model is re-read afterwards.
 	viaDHCP bool
@@ -170,6 +183,9 @@ type plan struct {
 	commands []network.Command
 	// viaDHCP routes the plan to the DHCP backend instead of the links one.
 	viaDHCP bool
+	// guarded reports that the first command arms the backend's automatic
+	// rollback, and that a keep-or-roll-back dialog follows the run.
+	guarded bool
 }
 
 // newApp builds the model around the two backends: the links backend and the
@@ -187,6 +203,10 @@ func newApp(backend network.Backend, dhcpBackend dhcp.Backend, th theme.Theme,
 		width:         80,
 		height:        24,
 		loading:       true,
+		now:           time.Now,
+	}
+	if guard, ok := backend.(network.Guard); ok {
+		a.guard = guard
 	}
 	// `networkctl up` and `down` arrived in a later systemd than the rest of
 	// the verbs. On an older one the keys are dropped from the help bar
@@ -279,17 +299,20 @@ func (a *app) run(p plan) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		var outputs []string
+		var outputs, all []string
 		for _, cmd := range p.commands {
 			out, err := runner(ctx, cmd)
 			if err != nil {
-				return ranMsg{title: p.title, output: out, err: err, viaDHCP: p.viaDHCP}
+				return ranMsg{title: p.title, output: out, err: err, viaDHCP: p.viaDHCP,
+					guarded: p.guarded, outputs: all}
 			}
+			all = append(all, out)
 			if trimmed := strings.TrimSpace(out); trimmed != "" {
 				outputs = append(outputs, trimmed)
 			}
 		}
-		return ranMsg{title: p.title, output: strings.Join(outputs, "; "), viaDHCP: p.viaDHCP}
+		return ranMsg{title: p.title, output: strings.Join(outputs, "; "), viaDHCP: p.viaDHCP,
+			guarded: p.guarded, outputs: all}
 	}
 }
 
@@ -369,6 +392,13 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.dhcpCaps = a.dhcp.Capabilities()
 		return a, nil
 
+	case keepTickMsg:
+		return a, a.keepTick(msg)
+
+	case rollbackSettledMsg:
+		a.loading = true
+		return a, a.load()
+
 	case gatewaysMsg:
 		a.gateways = msg.gateways
 		a.gatewaysLoaded = true
@@ -377,6 +407,9 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ranMsg:
 		a.busy = false
+		if msg.guarded {
+			return a, a.afterGuarded(msg)
+		}
 		reload := a.load
 		if msg.viaDHCP {
 			reload = a.loadDHCP
@@ -472,6 +505,10 @@ func (a *app) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	a.mode = a.returnMode()
 	confirmed := a.confirm.Confirmed
+	if decision, ok := a.confirm.Payload.(keepDecision); ok {
+		a.confirm = ui.Confirm{}
+		return a, a.decideKeep(decision, confirmed)
+	}
 	pending, ok := a.confirm.Payload.(plan)
 	a.confirm = ui.Confirm{}
 	if !confirmed || !ok {
@@ -655,14 +692,22 @@ func (a *app) submitForm() tea.Cmd {
 		return nil
 	}
 	a.mode = modeConfirm
-	a.confirm = ui.Confirm{
+	a.setConfirm(ui.Confirm{
 		Title:   "Write " + write.Path,
-		Body:    a.diffForDialog(write.Diff),
+		Body:    a.diffForDialog(write.Diff) + noteLine(write.Note),
 		Command: a.previewAll(write.Commands, false),
 		Danger:  true,
 		Payload: plan{title: "Write " + write.Path, commands: write.Commands},
-	}
+	})
 	return nil
+}
+
+// noteLine renders a backend's note under a diff, or nothing.
+func noteLine(note string) string {
+	if note == "" {
+		return ""
+	}
+	return "\n" + note
 }
 
 // previewAll renders every command of a plan, one per line, each through the
@@ -1108,20 +1153,20 @@ func (a *app) confirmSetGateway(title string, gw network.Gateway, metric int) te
 		"This is a live change: it re-points the default route now. " +
 		"If you are connected over the current uplink, you may lose the session."
 	if gw.Managed {
-		body += "\nIt is not persistent — press P to also write a drop-in that " +
-			"survives a reconfigure."
+		body += "\nIt is not persistent: press P to also keep the priority in " +
+			"the configuration, so it survives a reconfigure."
 	} else {
-		body += "\nThis uplink is not managed by systemd-networkd, so only the " +
-			"live change is offered."
+		body += "\nThis uplink is not managed by " + a.caps.Manager +
+			", so only the live change is offered."
 	}
 	a.mode = modeConfirm
-	a.confirm = ui.Confirm{
+	a.setConfirm(ui.Confirm{
 		Title:   title,
 		Body:    body,
 		Command: a.backend.Preview(cmd),
 		Danger:  true,
 		Payload: plan{title: title, commands: []network.Command{cmd}},
-	}
+	})
 	return nil
 }
 
@@ -1144,16 +1189,24 @@ func (a *app) persistGateway() tea.Cmd {
 	}
 	title := "Persist the gateway of " + gw.Interface
 	a.mode = modeConfirm
-	a.confirm = ui.Confirm{
-		Title: title,
-		Body: a.diffForDialog(write.Diff) +
-			"\nThis survives a reconfigure; it applies on the next " +
-			"`networkctl reconfigure " + gw.Interface + "` or reboot.",
+	a.setConfirm(ui.Confirm{
+		Title:   title,
+		Body:    a.diffForDialog(write.Diff) + "\n" + persistNote(write, gw),
 		Command: a.previewAll(write.Commands, false),
 		Danger:  true,
 		Payload: plan{title: title, commands: write.Commands},
-	}
+	})
 	return nil
+}
+
+// persistNote says when a persisted priority takes effect: the backend's own
+// note when it gave one, networkd's reconfigure otherwise.
+func persistNote(write network.WritePlan, gw network.Gateway) string {
+	if write.Note != "" {
+		return write.Note
+	}
+	return "This survives a reconfigure; it applies on the next " +
+		"`networkctl reconfigure " + gw.Interface + "` or reboot."
 }
 
 // moveGatewayCursor moves the selection on the Gateways screen.
@@ -1264,7 +1317,7 @@ func (a *app) requireManagedLink() (network.Link, bool) {
 	if !link.Managed {
 		reason := link.ReadOnlyReason
 		if reason == "" {
-			reason = "this link is not managed by systemd-networkd"
+			reason = "this link is not managed by " + a.caps.Manager
 		}
 		a.setStatusf(ui.StatusWarn, "%s is read-only: %s", link.Name, reason)
 		return network.Link{}, false
@@ -1322,7 +1375,7 @@ func (a *app) promptDNS(target inputTarget) tea.Cmd {
 	title, placeholder, help, current := "DNS servers for "+link.Name,
 		"192.0.2.53 2001:db8::53",
 		"Space separated. Empty clears them. Runtime only: reconfiguring the "+
-			"link restores what its .network file says.",
+			"link restores what its "+a.caps.ConfigNoun+" says.",
 		strings.Join(link.DNS, " ")
 	if target == inputDomains {
 		title, placeholder, current = "Search domains for "+link.Name,
@@ -1347,8 +1400,7 @@ func (a *app) openConfigForm() tea.Cmd {
 	if !ok {
 		return nil
 	}
-	file, _ := a.model.ConfigFor(link)
-	a.form = newConfigForm(link.Name, networkd.SpecFromFile(file, link.Name), a.caps)
+	a.form = newConfigForm(link.Name, a.backend.SpecFor(a.model, link), a.caps)
 	a.mode = modeForm
 	return nil
 }
@@ -1475,13 +1527,13 @@ func (a *app) releasedLinks(write network.WritePlan) []string {
 // whole diff, the warning, and every command that applies it.
 func (a *app) confirmNetdevPlan(title string, write network.WritePlan, warning string) {
 	a.mode = modeConfirm
-	a.confirm = ui.Confirm{
+	a.setConfirm(ui.Confirm{
 		Title:   title,
 		Body:    a.diffForDialog(write.Diff) + "\n" + a.wrapForDialog(warning),
 		Command: a.previewAll(write.Commands, false),
 		Danger:  true,
 		Payload: plan{title: title, commands: write.Commands},
-	}
+	})
 }
 
 // reparentWarning is the lockout warning a device that gathers links carries.
@@ -1523,13 +1575,13 @@ func (a *app) buildAndConfirm(title string,
 // openConfirm shows one command and what it does.
 func (a *app) openConfirm(title, body string, cmd network.Command) {
 	a.mode = modeConfirm
-	a.confirm = ui.Confirm{
+	a.setConfirm(ui.Confirm{
 		Title:   title,
 		Body:    body,
 		Command: a.backend.Preview(cmd),
 		Danger:  cmd.Destructive,
 		Payload: plan{title: title, commands: []network.Command{cmd}},
-	}
+	})
 }
 
 // applyFilter recomputes the visible links from the current filter.

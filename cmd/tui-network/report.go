@@ -9,6 +9,7 @@ import (
 	"github.com/tui-tools/tui-kit/config"
 	"github.com/tui-tools/tui-kit/report"
 	"github.com/tui-tools/tui-kit/theme"
+	"github.com/tui-tools/tui-network/internal/backends"
 	"github.com/tui-tools/tui-network/internal/dhcp"
 	"github.com/tui-tools/tui-network/internal/network"
 )
@@ -39,19 +40,24 @@ func runReport(cfg config.Config, opts options, dhcpBackend dhcp.Backend,
 	dhcpCompat compat.Result, out io.Writer) error {
 	palette, _ := theme.ResolvePalette()
 
-	// The same probe --check and the header use. There is one version probe in
-	// this tool and this is it.
-	backendCompat := probeCompat(context.Background(), opts.demo)
-
-	// The backend is built so that a machine without networkctl says so, but
-	// its absence must not cost the report: the name is known from the
-	// manifest either way.
+	// The backend is selected and built so that a machine without either
+	// manager says so, but its absence must not cost the report.
 	name := backendName
-	var selectError string
-	if backend, err := pickBackend(cfg, opts, backendCompat); err != nil {
+	var selectError, selectDetail string
+	selection, err := selectBackend(cfg, opts)
+	if err != nil {
 		selectError = err.Error()
 	} else {
-		name = backend.Name()
+		name, selectDetail = selection.Name, selection.Detail
+	}
+
+	// The same probe --check and the header use. There is one version probe in
+	// this tool and this is it.
+	backendCompat := probeCompat(context.Background(), opts.demo.on, name)
+	if err == nil {
+		if _, buildErr := buildBackend(cfg, opts, selection, backendCompat); buildErr != nil {
+			selectError = buildErr.Error()
+		}
 	}
 
 	info := report.Info{
@@ -60,19 +66,22 @@ func runReport(cfg config.Config, opts options, dhcpBackend dhcp.Backend,
 		Backend:        name,
 		BackendVersion: backendCompat.Version,
 		BackendDetail:  backendCompat.Detail,
-		Demo:           opts.demo,
+		Demo:           opts.demo.on,
 		Sudo:           cfg.String(config.KeySudo, ""),
 		Theme:          palette.Name,
 	}
-	if opts.demo {
-		// The fake imitates systemd-networkd down to the argv it builds, so
-		// the backend line says demo and the imitated backend is named next to
-		// it rather than left to be guessed from the tool's name.
+	if selectDetail != "" {
+		info.Extra = append(info.Extra, report.Field{Key: "selected", Value: selectDetail})
+	}
+	if opts.demo.on {
+		// The fake imitates its manager down to the argv it builds, so the
+		// backend line says demo and the imitated backend is named next to it
+		// rather than left to be guessed from the tool's name.
 		info.Backend = "demo"
 		info.Extra = append(info.Extra, report.Field{
-			Key: "demo backend", Value: backendName,
+			Key: "demo backend", Value: name,
 		})
-	} else {
+	} else if name == backendName {
 		// Which parser ran and which keys existed are facts about the systemd
 		// on this machine, and there is no systemd behind the fake, so both
 		// lines are live-only rather than invented.
@@ -88,7 +97,7 @@ func runReport(cfg config.Config, opts options, dhcpBackend dhcp.Backend,
 	// state: it names the detected server and the version the probe read, never
 	// whether the service is up (that is a read --check does).
 	info.Extra = append(info.Extra, report.Field{
-		Key: "dhcp backend", Value: dhcpBackendLine(opts.demo, dhcpBackend.Name(), dhcpCompat),
+		Key: "dhcp backend", Value: dhcpBackendLine(opts.demo.on, dhcpBackend.Name(), dhcpCompat),
 	})
 
 	// The uplink view is a router fact worth a line, but it is derived from the
@@ -97,7 +106,7 @@ func runReport(cfg config.Config, opts options, dhcpBackend dhcp.Backend,
 	// points at where the count is read (the screen and --check), and only the
 	// demo, whose backend is in-memory, states the sample's uplink count.
 	info.Extra = append(info.Extra, report.Field{
-		Key: "gateways", Value: gatewaysLine(cfg, opts, backendCompat),
+		Key: "gateways", Value: gatewaysLine(cfg, opts, name, backendCompat),
 	})
 
 	if selectError != "" {
@@ -106,7 +115,7 @@ func runReport(cfg config.Config, opts options, dhcpBackend dhcp.Backend,
 		})
 	}
 
-	_, err := io.WriteString(out, report.Render(info))
+	_, err = io.WriteString(out, report.Render(info))
 	return err
 }
 
@@ -114,8 +123,14 @@ func runReport(cfg config.Config, opts options, dhcpBackend dhcp.Backend,
 // reads nothing — it names where the count is read instead — and under --demo,
 // whose backend answers from memory, it states how many uplinks the sample has
 // and whether that is enough to fail over.
-func gatewaysLine(cfg config.Config, opts options, backendCompat compat.Result) string {
-	if !opts.demo {
+func gatewaysLine(cfg config.Config, opts options, name string,
+	backendCompat compat.Result) string {
+	if !opts.demo.on {
+		if name == backends.NetworkManagerName {
+			return "managed live via `nmcli device modify`, persistent via the " +
+				"profile's route metric; the Gateways screen enumerates uplinks " +
+				"and --check reports the count"
+		}
 		return "managed live via `ip route`, persistent via a networkd drop-in; " +
 			"the Gateways screen enumerates uplinks and --check reports the count"
 	}

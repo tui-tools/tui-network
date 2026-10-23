@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/tui-tools/tui-kit/compat"
+	"github.com/tui-tools/tui-network/internal/backends"
 	"github.com/tui-tools/tui-network/internal/dhcpd"
 )
 
@@ -16,7 +17,7 @@ import (
 // than left to be guessed, and that no network was read to produce any of it.
 func TestRunReportDemo(t *testing.T) {
 	var out strings.Builder
-	opts := options{demo: true, report: true}
+	opts := options{demo: demoFlag{on: true, backend: backends.BackendNetworkd}, report: true}
 	if err := runReport(baseConfig(), opts, dhcpd.NewFake(), compat.Result{}, &out); err != nil {
 		t.Fatalf("runReport: %v", err)
 	}
@@ -49,7 +50,12 @@ func TestRunReportDemo(t *testing.T) {
 // nothing.
 func TestRunReportLive(t *testing.T) {
 	var out strings.Builder
-	if err := runReport(baseConfig(), options{report: true}, dhcpd.NewFake(), compat.Result{}, &out); err != nil {
+	// The networkd lines belong to the networkd backend, so it is named
+	// rather than detected: the test must not depend on which manager the
+	// machine running it has.
+	cfg := baseConfig()
+	cfg.Set(backends.KeyBackend, backends.BackendNetworkd)
+	if err := runReport(cfg, options{report: true}, dhcpd.NewFake(), compat.Result{}, &out); err != nil {
 		t.Fatalf("runReport: %v", err)
 	}
 	got := out.String()
