@@ -152,7 +152,7 @@ Upgrades then arrive with the rest of your system updates.
 ### Any distribution, static binary
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-network/releases/download/v0.3.4/tui-network_0.3.4_linux_amd64.tar.gz | tar -xz tui-network
+curl -fsSL https://github.com/tui-tools/tui-network/releases/download/v0.4.0/tui-network_0.4.0_linux_amd64.tar.gz | tar -xz tui-network
 sudo install -m0755 tui-network /usr/local/bin/tui-network
 ```
 
